@@ -1663,7 +1663,7 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
     if any(AIRCRAFT[name]['propulsion']=='rocket' for name in results):
         output['assumptions'].append('Rocket aircraft: supplied stationary thrust at selected throttle and fixed propellant mass; fuel depletion, ignition and burnout trajectories are not simulated. Authored thrust direction and mount moments retained.')
     if config['low_speed_load_cap']:
-        output['assumptions'].append('Chart search limited to 8 g below 300 km/h TAS; verified higher-speed rising-branch endpoints may tighten this under a monotonic-envelope assumption. This is a search-domain assumption, not a proved physical limit.')
+        output['assumptions'].append('Chart search limited to 3.6 g at or below 200 km/h TAS and 8 g above 200 and below 300 km/h TAS; verified higher-speed rising-branch endpoints may tighten this under a monotonic-envelope assumption. This is a search-domain assumption, not a proved physical limit.')
     speed_checks={name:[] for name in results};fractions=np.linspace(0.,1.,17)
     boundary_checks={name:[] for name in results}
     boundary_probes={name:{} for name in results}
@@ -1756,18 +1756,19 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
         if not config['low_speed_load_cap']:
             run([(name,cfg_json,v,None) for name,speeds in speed_grids.items() for v in speeds],'Solving feasible speed columns',sample_initial_column)
         else:
-            from em_load_limits import anchor_from_columns
+            from em_load_limits import anchor_from_columns,LOWER_SPEED_KMH,LOWER_LOAD_G
             run([(name,cfg_json,v,None) for name,speeds in speed_grids.items() for v in speeds if v>=300.],
                 'Solving reference speed columns',sample_initial_column)
             threshold_tasks=[]
             for name,speeds in speed_grids.items():
-                if not min(speeds)<300.<max(speeds):continue
                 nearby=min((c for c in results[name].values() if c.get('boundary') and c['boundary']['valid']),
                     key=lambda c:c['speed_kmh'],default=None)
-
-
-                if nearby is None or nearby['boundary']['load_g']>=8.:
-                    for v in (max(config['speed_min_kmh'],299.99),300.):
+                for threshold,cap,knots in ((300.,8.,(299.99,300.)),
+                        (LOWER_SPEED_KMH,LOWER_LOAD_G,(LOWER_SPEED_KMH,LOWER_SPEED_KMH+.01))):
+                    if not min(speeds)<=threshold<max(speeds):continue
+                    if nearby is not None and nearby['boundary']['load_g']<cap:continue
+                    for v in knots:
+                        v=max(config['speed_min_kmh'],min(max(speeds),v))
                         if v not in speeds:speeds.append(v)
                         if v>=300. and v not in results[name]:threshold_tasks.append((name,cfg_json,v,None))
             run(threshold_tasks,'Resolving the low-speed search ceiling',sample_initial_column)

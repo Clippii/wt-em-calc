@@ -61,10 +61,12 @@ def matrices(data, aircraft):
 
 def smooth_surface(data,aircraft):
     from em_sampling import speed_interpolate
+    from em_load_limits import LOWER_SPEED_KMH,LOWER_LOAD_G
 
 
     columns=aircraft['columns'];nx=2*data['settings']['surface_resolution']-1;nf=1201
     outline=aircraft.get('boundary_columns',columns)
+    lower_speed_cap=any((c.get('load_search_limit') or {}).get('at_or_below_speed_kmh')==LOWER_SPEED_KMH for c in columns+outline)
     if data.get('preview'):nx=min(nx,241);nf=121
     xs=np.linspace(data['settings']['speed_min_kmh'],data['settings']['speed_max_kmh'],nx)
 
@@ -114,6 +116,10 @@ def smooth_surface(data,aircraft):
         below=xs<300.
         caps[below]=np.minimum(caps[below],8.)
         upper[below]=np.minimum(upper[below],8.)
+        if lower_speed_cap:
+            below=xs<=LOWER_SPEED_KMH
+            caps[below]=np.minimum(caps[below],LOWER_LOAD_G)
+            upper[below]=np.minimum(upper[below],LOWER_LOAD_G)
     fraction=np.linspace(0.,1.,nf)
     lower_turn=np.sqrt(np.maximum(0.,lower*lower-1.))
     upper_turn=np.sqrt(np.maximum(0.,upper*upper-1.))
@@ -145,6 +151,7 @@ def smooth_surface(data,aircraft):
                                  global_cap is not None and abs(cap-global_cap)<1e-5 or
                                  data['settings']['max_load_g'] is not None and abs(cap-data['settings']['max_load_g'])<1e-5 or
                                  data['settings'].get('low_speed_load_cap',False) and x<300. and abs(cap-8.)<1e-5 or
+                                 data['settings'].get('low_speed_load_cap',False) and lower_speed_cap and x<=LOWER_SPEED_KMH and abs(cap-LOWER_LOAD_G)<1e-5 or
                                  any(c['boundary_status']=='plot ceiling' for c in outline[index:index+2])))))
 
 

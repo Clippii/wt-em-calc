@@ -2,6 +2,8 @@ import math
 
 SPEED_KMH=300.
 LOAD_G=8.
+LOWER_SPEED_KMH=200.
+LOWER_LOAD_G=3.6
 GLOBAL_LOAD_G=25.
 ANCHOR_MARGIN_G=.05
 
@@ -13,6 +15,7 @@ def ceiling(solver,speed):
     if not solver.config.get('low_speed_load_cap',True):return limit
     if speed>=SPEED_KMH:return limit
     limit=min(limit,LOAD_G)
+    if speed<=LOWER_SPEED_KMH:limit=min(limit,LOWER_LOAD_G)
     for anchor in getattr(solver,'chart_load_anchors',[]):
         if speed<anchor['speed_kmh']:
             limit=min(limit,max(1.1,anchor['upper_load_g']))
@@ -23,12 +26,15 @@ def description(solver,speed):
     if not getattr(solver,'chart_search',False):return None
     limit=ceiling(solver,speed)
     low_speed=solver.config.get('low_speed_load_cap',True) and speed<SPEED_KMH
+    lower_speed=low_speed and speed<=LOWER_SPEED_KMH
     anchors=[a for a in getattr(solver,'chart_load_anchors',[]) if low_speed and speed<a['speed_kmh'] and max(1.1,a['upper_load_g'])<=limit+1e-10]
     basis='user-selected global load search cap'
     if low_speed and limit==LOAD_G:basis='user-selected 8 g low-speed search cap'
+    if lower_speed and limit==LOWER_LOAD_G:basis='user-selected 3.6 g low-speed search cap'
     if anchors:basis='monotonic low-speed envelope assumption'
     if solver.config.get('max_load_g')==limit:basis='user-selected plot load ceiling'
-    return dict(load_g=limit,below_speed_kmh=SPEED_KMH if low_speed else None,physical_limit=False,
+    return dict(load_g=limit,below_speed_kmh=SPEED_KMH if low_speed and not lower_speed else None,
+        at_or_below_speed_kmh=LOWER_SPEED_KMH if lower_speed else None,physical_limit=False,
         global_load_cap_g=solver.config.get('global_load_cap_g',GLOBAL_LOAD_G),basis=basis,
         anchors=anchors)
 
