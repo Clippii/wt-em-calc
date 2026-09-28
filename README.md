@@ -8,6 +8,6 @@ For Windows 10/11 x64:
 
 1. Extract the entire Windows ZIP into a writable folder.
 2. Run **Launch EM Plotter.cmd** or **Launch Altitude Plotter.cmd**. Keep its console window open while using the app.
-3. Use **Update Game Data.cmd** to refresh aircraft data. Bundled data works offline.
+3. Launchers open using bundled data without checking for updates or requiring internet access. Run **Update Game Data.cmd** to refresh aircraft data when GitHub is accessible.
 
 No Python installation is needed. To update the app, close it and extract the new download into a new folder.

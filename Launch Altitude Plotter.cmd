@@ -14,10 +14,5 @@ if not exist "%APP_PYTHON%" (
     pause
     exit /b 1
 )
-"%APP_PYTHON%" scripts\sync_game_data.py --offline-ok
-if errorlevel 1 (
-    pause
-    exit /b 1
-)
 "%APP_PYTHON%" scripts\altitude_launch.py --open
 if errorlevel 1 pause
