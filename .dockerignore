@@ -1,0 +1,13 @@
+*
+!requirements.txt
+!requirements-plotter.txt
+!scripts/
+!scripts/*.py
+!app/
+!app/*.html
+!app/*.js
+!app/*.css
+!app/release.json
+!build-info.json
+!app/vendor/
+!app/vendor/*.js
