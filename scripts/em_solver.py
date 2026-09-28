@@ -107,7 +107,6 @@ def settings(values=None):
     if result['trim_mode'] not in ('optimized','fixed'): raise ValueError('Unknown trim mode')
     if result['sampling'] not in ('adaptive','regular'):raise ValueError('Unknown sampling mode')
     if result['turn_response_mode']!='settled':raise ValueError('Turn response mode is unavailable')
-    if any(is_prop(a) for a in result['aircraft']) and result['engine_control_mode']!='quasi_steady':raise ValueError('Propeller engine mode is unavailable')
     if result['sampling']=='regular' and result['max_load_g'] is None:raise ValueError('Regular diagnostic sampling requires a load range; use adaptive for the automatic envelope')
     if not isinstance(result['fixed_trim'],list) or len(result['fixed_trim'])!=3:
         raise ValueError('Fixed trim must contain roll, pitch and yaw')
@@ -128,6 +127,9 @@ def settings(values=None):
         result['flaps_percent']=0.
     for name in result['aircraft']:
         condition=dict(result,**normalized.get(name,{}))
+        # Mixed batches carry shared defaults plus per-aircraft engine modes.
+        if is_prop(name) and condition['engine_control_mode']!='quasi_steady':
+            raise ValueError('Propeller engine mode is unavailable')
         if (condition['instructor'] or result['compare_instructor']) and condition['extra_mass_kg']:
             raise ValueError('Instructor integration currently requires a clean loadout (zero extra mass)')
     return result

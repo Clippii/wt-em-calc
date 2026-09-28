@@ -24,7 +24,7 @@ if (window.location.protocol === 'file:') window.location.replace('http://127.0.
 
 <div id="condition-home" hidden><fieldset id="aircraft-condition" disabled>
 <div id="sweep-field" hidden><label class="field">Wing sweep <output id="sweep-label">0%</output><input id="sweep" type="range" min="0" max="100" step="1" value="0"></label></div>
-<label class="field">Altitude <div class="input-unit"><input id="altitude" type="number" min="0" max="18000" step="100" value="0" required><span>m</span></div></label>
+<label class="field">Altitude <div class="input-unit"><input id="altitude" type="number" min="0" max="18000" step="1" value="0" required><span>m</span></div></label>
 <label class="field">Fuel load <output id="fuel-label">30%</output><input id="fuel" type="range" min="1" max="100" step="1" value="30"></label>
 <label class="field">Throttle <output id="throttle-label">110%</output><input id="throttle" type="range" min="0" max="110" step="1" value="110"></label>
 <small id="rocket-model-help" hidden>Rocket thrust at the selected throttle and fixed fuel load. The chart does not simulate fuel depletion or burnout.</small>

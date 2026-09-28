@@ -837,17 +837,37 @@ def _sample_column(task,boundary_only=False):
             continued=turning_limit(solver,speed,low,high)
             if continued:
                 samples[continued['load_g']]=continued;low=continued;direct=continued
+        if not direct and not solver.is_prop and not high['converged']:
+            # Follow balanced turns in fine load steps before attempting a
+            # limit from a distant seed. Elevator command can turn around on
+            # this branch, so command-only continuation can miss the endpoint.
+            step=min(.02,(high['load_g']-low['load_g'])*.5)
+            for _ in range(32):
+                if step<.0005 or high['load_g']-low['load_g']<=.0005:break
+                n=min(low['load_g']+step,(low['load_g']+high['load_g'])*.5)
+                guess=list(low['solution'])
+                guess[1]+=math.degrees(math.acos(1./n)-math.acos(1./low['load_g']))
+                # Revisit failed coarse probes with the nearby balanced seed.
+                if n in samples and not samples[n]['valid']:del samples[n]
+                p=solve(n,guess,local=True)
+                if p['valid']:
+                    low=p
+                    step=min(.02,step*1.5)
+                else:
+                    high=p;step*=.5
+            from em_pitch_limit import limit as pitch_limit
+            direct=pitch_limit(solver,speed,low)
+            if direct:samples[direct['load_g']]=direct;low=direct
         for _ in range(0 if direct else 11):
             if high['load_g']-low['load_g']<=.004:break
             p=solve((low['load_g']+high['load_g'])/2,low['solution'])
             if numerical_failure(p):
                 if not solver.is_prop:
-                    probe=solve((p['load_g']+high['load_g'])*.5,low['solution'],exhaustive=True)
-                    if probe['valid']:low=probe;continue
-                    if (probe['converged'] or probe['stall_margin_deg']<=1. or
-                            probe['authority_margin']<=.02 or max(probe['wing_load_ratios'])>=.98):
-                        high=probe;continue
-                    break
+                    # Contract toward the balanced trim instead of skipping the
+                    # valid interval below a failed midpoint. This is only a
+                    # search bracket; failure does not certify a physical limit.
+                    high=p
+                    continue
 
 
                 for probe_load in ((low['load_g']+p['load_g'])*.5,
@@ -2001,7 +2021,8 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
                                           failed_holdouts=int(np.count_nonzero(failed)),boundary_error_dps=boundary_turn_error,
                                           boundary_outside_plot_tolerance=boundary_inaccurate))
             overlap=loads[-1]-loads[0]>.0002
-            inaccurate=(np.any(failed) or boundary_inaccurate or feasibility_change or
+            unresolved_boundary=column['boundary_status'] in ('unresolved numerical boundary','Instructor boundary unresolved')
+            inaccurate=(np.any(failed) or boundary_inaccurate or feasibility_change or unresolved_boundary or
                         column.get('speed_point_probe') and (not column['points'][0]['valid'] or not finite.all()) or
                         overlap and np.isfinite(actual).any()!=np.isfinite(pred).any() or
                         column.get('speed_probe') and (column.get('boundary_status') not in ('verified limit','plot ceiling') or
