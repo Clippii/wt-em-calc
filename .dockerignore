@@ -8,6 +8,9 @@
 !app/*.js
 !app/*.css
 !app/release.json
+!app/icons/
+!app/icons/*.png
+!app/icons/*.svg
 !build-info.json
 !app/vendor/
 !app/vendor/*.js

@@ -290,6 +290,8 @@ class Handler(BaseHTTPRequestHandler):
         names={'/':'index.html','/index.html':'index.html','/app.js':'app.js','/config.js':'config.js','/styles.css':'styles.css','/vendor/plotly.min.js':'vendor/plotly.min.js'}
         names.update({'/release.json':'release.json','/release-links.js':'release-links.js','/release-links.css':'release-links.css'})
         names['/fonts/wt-symbols.ttf']='fonts/wt-symbols.ttf'
+        names.update({f'/icons/neothunderism-{size}.png':f'icons/neothunderism-{size}.png' for size in (16,32,180,192,512)})
+        names.update({f'/icons/neothunderism-{asset}':f'icons/neothunderism-{asset}' for asset in ('mark.svg','mark.png','app.svg','favicon.svg')})
         if path in names:return self.file(APP/names[path])
         return self.respond(dict(error='Not found'),404)
     def do_POST(self):

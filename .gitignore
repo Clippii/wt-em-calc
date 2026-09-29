@@ -132,5 +132,8 @@
 !/app/*.css
 !/app/*.html
 !/app/release.json
+!/app/icons/
+!/app/icons/*.png
+!/app/icons/*.svg
 !/app/vendor/
 !/app/vendor/*.js

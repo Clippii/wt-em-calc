@@ -162,6 +162,8 @@ class Handler(BaseHTTPRequestHandler):
                  '/altitude_surface.js': 'altitude_surface.js',
                  '/altitude.css': 'altitude.css', '/vendor/plotly.min.js': 'vendor/plotly.min.js',
                  '/fonts/wt-symbols.ttf': 'fonts/wt-symbols.ttf'}
+        files.update({f'/icons/neothunderism-{size}.png':f'icons/neothunderism-{size}.png' for size in (16,32,180,192,512)})
+        files.update({f'/icons/neothunderism-{asset}':f'icons/neothunderism-{asset}' for asset in ('mark.svg','mark.png','app.svg','favicon.svg')})
         if path in files:
             return self.file(APP / files[path])
         parts = path.strip('/').split('/')
