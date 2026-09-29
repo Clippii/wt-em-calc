@@ -39,11 +39,13 @@ if (window.location.protocol === 'file:') window.location.replace('http://127.0.
 <div class="divider"></div>
 
 <div class="field">Flight mode<div class="mode-switch" role="radiogroup" aria-label="Flight mode"><label><input id="flight-mode-rb" type="radio" name="flight-mode" value="rb" checked><span>RB</span></label><label><input id="flight-mode-sb" type="radio" name="flight-mode" value="sb"><span>SB</span></label></div></div>
-<div class="field">Flutter<div class="mode-switch" role="radiogroup" aria-label="Flutter"><label><input id="flutter-on" type="radio" name="flutter" value="on" checked><span>On</span></label><label><input id="flutter-off" type="radio" name="flutter" value="off"><span>Off</span></label></div><small>Off removes structural load and speed limits. Stall, Instructor and control limits still apply.</small></div>
 
 
 <div class="divider"></div>
 <details><summary>Additional settings</summary><label class="field">Additional mass at CG<div class="input-unit"><input id="extra-mass" type="number" min="0" max="5000" step="10" value="0"><span>kg</span></div></label><label class="field">Simulation rate<div class="input-unit"><input id="timestep" type="number" min="30" max="120" step="1" value="48"><span>Hz</span></div></label></details>
+<details id="legacy-modes"><summary>Legacy modes</summary>
+<div class="field">Flutter<div class="mode-switch" role="radiogroup" aria-label="Flutter"><label><input id="flutter-on" type="radio" name="flutter" value="on" checked><span>On</span></label><label><input id="flutter-off" type="radio" name="flutter" value="off"><span>Off</span></label></div><small>The fixed search region always respects the selected aircraft’s structural load and speed limits. Off applies only to diagnostics with that search region disabled.</small></div>
+</details>
 <div class="apply-settings"><button id="apply-settings-to-all" type="button">Apply these settings to all added aircraft</button><span id="apply-settings-status" class="hint" role="status" aria-live="polite"></span></div>
 </fieldset></div>
 <span class="eyebrow">SHARED PLOT SETTINGS</span>

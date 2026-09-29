@@ -3,6 +3,8 @@ from scipy.interpolate import PchipInterpolator
 
 
 def same_deployment_branch(columns):
+    mach={tuple(c['mach_branch']) for c in columns if c.get('mach_branch') is not None}
+    if len(mach)>1:return False
     threshold=float(np.float32(.05))*100.
     branches={tuple(c[k]['flaps_percent']>threshold for k in ('lower_boundary','boundary'))
               for c in columns if all(c.get(k) and 'flaps_percent' in c[k]
@@ -13,9 +15,10 @@ def same_deployment_branch(columns):
 def local_support(columns,left,valid):
     indices=[left,left+1]
     core=columns[left:left+2]
+    if not same_deployment_branch(core):return indices
     for i in (left-1,left+2):
         if (0<=i<len(columns) and valid[i]
-                and (not same_deployment_branch(core) or same_deployment_branch(core+[columns[i]]))):
+                and same_deployment_branch(core+[columns[i]])):
             indices.append(i)
     return sorted(indices)
 

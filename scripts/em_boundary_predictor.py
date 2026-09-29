@@ -8,6 +8,8 @@ def coupled_limit(solver,speed,seed):
     limits=sorted((p for p in seed if p.get('envelope_limit')),key=lambda p:p['speed_kmh'])
     if len(limits)!=2 or not limits[0]['speed_kmh']<speed<limits[1]['speed_kmh']:return None
     left,right=limits
+    from em_mach_events import catalog,crossings
+    if crossings(catalog(solver)['events'],left,right):return None
     kind=left['envelope_limit']['kind']
     if kind!=right['envelope_limit']['kind']:return None
     if any(p.get('sideslip_attitude_deg',0.) for p in limits):return None
@@ -32,6 +34,8 @@ def continue_limit(solver,speed,seed):
     limits=sorted((p for p in seed if p.get('envelope_limit')),key=lambda p:p['speed_kmh'])
     if len(limits)!=2 or not limits[0]['speed_kmh']<speed<limits[1]['speed_kmh']:return None
     left,right=limits
+    from em_mach_events import catalog,crossings
+    if crossings(catalog(solver)['events'],left,right):return None
     def active(point):
         limit=point['envelope_limit']
         candidates={limit['kind'],*limit.get('competing_constraints',[])}

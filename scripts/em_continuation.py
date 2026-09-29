@@ -119,11 +119,13 @@ class TrimCurve:
         retain_phases = False
         base = self.value(z, frozen, retain_phases) if frozen is not None else value
         from em_trim_numerics import jacobian, DerivativeUnavailable
+        from em_mach_events import rough_mach
+        mach=base['result']['air']['mach']
         try:
             return jacobian(z, base, lambda q:self.value(q, frozen, retain_phases),
                 self.solver.derivative_branch, self.difference,
                 (1., -1., .5, -.5, 2., -2., .1, -.1, .01, -.01), inside=self.inside,
-                project=(lambda q:self.same_mach_state(q, base['result']['air']['mach'])) if event is not None else None,
+                project=(lambda q:self.same_mach_state(q,mach)) if event is not None or rough_mach(self.solver,mach) else None,
                 event=event, actual_step=True)
         except DerivativeUnavailable as failure:
             self.last_correction = dict(outcome='derivative branch unavailable', axis=failure.axis)

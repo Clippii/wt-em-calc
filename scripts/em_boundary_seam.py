@@ -30,6 +30,9 @@ def check_boundary(task):
         return [*points,b]
 
     common=dict(speed_interval_kmh=[lo,hi])
+    from em_mach_events import catalog,crossings,certificate
+    if crossings(catalog(solver)['events'],left,right):
+        return certificate(solver,pair,sample)
     if left.get('roll_leveling_branch')==right.get('roll_leveling_branch'):
         points=continuous(left,right)
         if points is None:return None
@@ -104,9 +107,15 @@ def apply_outline(boundary,certificates):
         points=[]
         for sample in certificate['points']:
             point=dict(speed_kmh=sample['speed_kmh'],turn_dps=sample['turn_dps'],at_plot_ceiling=False)
+            if certificate.get('mach_event'):
+                point.update(edge_kind='Mach-polar boundary transition',
+                    mach_event=certificate['mach_event'])
+                if certificate.get('native_mach_uncertainty'):
+                    point.update(edge_kind='Mach transition; sampled numerical uncertainty',
+                        native_mach_uncertainty=certificate['native_mach_uncertainty'])
             if transition and sample['speed_kmh'] in transition:
                 point.update(speed_kmh=sum(transition)*.5,sample_speed_kmh=sample['speed_kmh'],
-                             vertical_edge=True,edge_kind='Roll-leveling boundary transition')
+                             vertical_edge=True,edge_kind=certificate.get('transition_kind','Roll-leveling boundary transition'))
             points.append(point)
         boundary=[p for p in boundary if not lo<=p['speed_kmh']<=hi]+points
         boundary.sort(key=lambda p:p['speed_kmh'])

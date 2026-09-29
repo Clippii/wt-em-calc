@@ -55,7 +55,7 @@ def compute_cached(config,progress=None,cancelled=None,preview=None):
 
 
 def outline_column(column):
-    keys=('speed_kmh','boundary','lower_boundary','boundary_status','boundary_reason','load_search_limit')
+    keys=('speed_kmh','boundary','lower_boundary','boundary_status','boundary_reason','load_search_limit','mach_branch')
     return dict({k:column.get(k) for k in keys},
                 points=[p for p in column['points'] if p['load_g']==1.])
 
@@ -145,7 +145,8 @@ def sample_with_history(worker,task,history):
     column=(bounded_column(task,lambda:worker(task),certificate=certificate)
             if isinstance(task[2],Real) else worker(task))
     from em_load_limits import annotate
-    return annotate(solver,column),solver.instructor_trim_entries if solver.config['instructor'] else {}
+    from em_mach_events import annotate as annotate_mach
+    return annotate_mach(solver,annotate(solver,column)),solver.instructor_trim_entries if solver.config['instructor'] else {}
 
 
 def boundary_prediction(columns,speed):
@@ -1663,6 +1664,9 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
     start=time.monotonic();cfg_json=json.dumps(config,sort_keys=True)
     conditions={name:aircraft_settings(config,name) for name in config['aircraft']}
     redlines={name:speed_limits(load(name),cfg) for name,cfg in conditions.items()}
+    from em_mach_events import aircraft_catalog as mach_catalog,speed_knots,crossings,transition_width
+    mach_info={name:mach_catalog(load(name),cfg) for name,cfg in conditions.items()}
+    mach_intervals={name:[] for name in conditions}
     workers=WORKERS;results={name:{} for name in config['aircraft']}
     output=dict(settings=config,aircraft=[],sampling='adaptive',backend=BACKEND,workers=workers,
         loads_g=[],method='near-coordinated trim below positive stall; per-aircraft flight model and Ps definition; adaptive cubic surface',
@@ -1677,12 +1681,14 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
                      'Normal controllable flight: native pitch response must retain the normal elevator direction',
                      'Independently balanced pre-stall turns; failed intervals remain unresolved; extra mass at configured CG'],
         validation='Reconstructed kernels have native-code comparisons; this EM solver has not been validated against live flight.')
-    output['assumptions'].append(f"Chart search limited to {config['global_load_cap_g']:g} g globally; this is a search-domain ceiling, not a proved physical limit.")
+    if config.get('reference_load_cap',False):
+        output['assumptions'].append('Chart search ceiling is a frozen lookup table: maximum of saved I-153 M-62, BI and F-16XL SB flutter-on boundaries plus the smaller of 2 deg/s or 1 g. References: sea level, zero fuel mass, clean, supplied maximum power, torque/gyro on, structural load limits on, each clipped at its speed redline. Linear TAS lookup with endpoint holds; never recalibrated during chart calculation. This is a search-domain assumption, not a proved physical limit.')
+    output['assumptions'].append(f"Additional global search ceiling: {config['global_load_cap_g']:g} g; not a proved physical limit.")
     if any(c['turn_response_mode']=='local_acceleration' for c in conditions.values()):
         output['assumptions'].append('Local acceleration selected per aircraft: first-order constant-load, level coordinated turn; fixed sideslip; settled aerodynamic memory; no entry history. Large local changes are flagged; unavailable derivatives remain unresolved.')
     if any(AIRCRAFT[name]['propulsion']=='rocket' for name in results):
         output['assumptions'].append('Rocket aircraft: supplied stationary thrust at selected throttle and fixed propellant mass; fuel depletion, ignition and burnout trajectories are not simulated. Authored thrust direction and mount moments retained.')
-    if config['low_speed_load_cap']:
+    if config['low_speed_load_cap'] and not config.get('reference_load_cap',False):
         output['assumptions'].append('Chart search limited to 3.6 g at or below 200 km/h TAS and 8 g above 200 and below 300 km/h TAS; verified higher-speed rising-branch endpoints may tighten this under a monotonic-envelope assumption. This is a search-domain assumption, not a proved physical limit.')
     speed_checks={name:[] for name in results};fractions=np.linspace(0.,1.,17)
     boundary_checks={name:[] for name in results}
@@ -1766,6 +1772,8 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
             upper=min(config['speed_max_kmh'],redlines[name]['sample_speed_kmh']) if redlines[name]['enforced'] else config['speed_max_kmh']
             speeds=(np.linspace(config['speed_min_kmh'],upper,config['speed_samples']).tolist()
                     if upper>config['speed_min_kmh'] else [config['speed_min_kmh']])
+            speeds.extend(v for v in speed_knots(mach_info[name],conditions[name])
+                          if config['speed_min_kmh']<v<upper)
             for interval in exclusions[name]:
                 for edge in interval:
 
@@ -1773,7 +1781,7 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
                     speeds.extend(edge+offset for offset in [-.01,.01]
                                   if config['speed_min_kmh']<edge+offset<upper)
             speed_grids[name]=sorted(set(speeds))
-        if not config['low_speed_load_cap']:
+        if config.get('reference_load_cap',False) or not config['low_speed_load_cap']:
             run([(name,cfg_json,v,None) for name,speeds in speed_grids.items() for v in speeds],'Solving feasible speed columns',sample_initial_column)
         else:
             from em_load_limits import anchor_from_columns,LOWER_SPEED_KMH,LOWER_LOAD_G
@@ -1911,6 +1919,11 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
             mid=(lo+hi)*.5 if point_load is None else speed_check_position(lo,hi)
             if point_speed is not None:mid=point_speed
             left,right=columns[lo],columns[hi]
+            if (hi-lo<=transition_width(config) and
+                    all(c.get('boundary_status')=='verified limit' for c in (left,right)) and
+                    crossings(mach_info[name]['events'],left.get('boundary'),right.get('boundary'))):
+                if (lo,hi) not in mach_intervals[name]:mach_intervals[name].append((lo,hi))
+                return
             cap=min(c['boundary']['load_g'] if c['boundary'] else 1. for c in (left,right))
             floor=max(c['lower_boundary']['load_g'] if c.get('lower_boundary') else 1. for c in (left,right))
             loads=floor+fractions*max(0.,cap-floor)
@@ -2297,7 +2310,7 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
         from em_boundary_seam import check_boundary,boundary_intervals
         seam_interiors={name:[] for name in results};seam_boundaries={name:[] for name in results};seam_futures={}
         for name,columns in results.items():
-            for lo,hi in sorted(set(intervals[name]+terminal_speed_intervals[name])):
+            for lo,hi in sorted(set(intervals[name]+terminal_speed_intervals[name]+mach_intervals[name])):
                 if hi-lo>2.*speed_tolerance(config):continue
                 pair=[columns[v] for v in (lo,hi)]
                 if not all(c.get('lower_boundary') and c.get('boundary') and
@@ -2306,7 +2319,7 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
                 task=(name,json.dumps(conditions[name],sort_keys=True),(lo+hi)*.5,support)
                 future=pool.submit(sample_with_history,check_interior,task,dict(entry_histories[name]))
                 seam_futures[future]=(name,False)
-            for lo,hi in boundary_intervals(intervals[name]+terminal_speed_intervals[name],2.*speed_tolerance(config)):
+            for lo,hi in boundary_intervals(intervals[name]+terminal_speed_intervals[name]+mach_intervals[name],2.*speed_tolerance(config)):
                 pair=[columns[v] for v in (lo,hi)]
                 support=[{k:c[k] for k in ('speed_kmh','points','boundary','lower_boundary','boundary_status','boundary_reason')} for c in pair]
                 task=(name,json.dumps(conditions[name],sort_keys=True),(lo+hi)*.5,support)
@@ -2345,7 +2358,11 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
                 sustained=[p for col in ordered for p in col['sustained']],mass=ordered[0]['mass'],engine=ordered[0]['engine'],
                 valid_points=sum(p['valid'] for p in points),converged_points=sum(p['converged'] for p in points),
                 interpolation=dict(target_mps=config['sep_tolerance_mps'],target_contour_dps=turn_tolerance(config['sep_tolerance_mps']),target_speed_kmh=speed_tolerance(config),**coverage(config),speed_checks=checks,
-                                   unresolved_speed_intervals=intervals[name]+terminal_speed_intervals[name],boundary_checks=boundary_checks[name],
+                                   unresolved_speed_intervals=intervals[name]+terminal_speed_intervals[name]+[
+                                       span for span in mach_intervals[name] if not any(
+                                           c['speed_interval_kmh'][0]<=span[0] and c['speed_interval_kmh'][1]>=span[1]
+                                           for c in seam_boundaries[name])],boundary_checks=boundary_checks[name],
+                                   mach_transition_intervals=mach_intervals[name],mach_events=mach_info[name]['events'],
                                    certified_speed_interiors=seam_interiors[name],
                                    certified_boundary_intervals=seam_boundaries[name],
                                    boundary_refinement_intervals=spans[name],load_checks=sum(len(c['load_checks']) for c in ordered))))

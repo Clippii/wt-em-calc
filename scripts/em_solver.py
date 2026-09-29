@@ -40,7 +40,7 @@ AIRCRAFT = LazyCatalog()
 DEFAULTS = dict(aircraft=REFERENCE, altitude_m=0., fuel_percent=30., throttle=1.1,
                 afterburner=True, torque_gyro=False, engine_control_mode='quasi_steady', aircraft_trim_mode='discrete', trim_mode='optimized', trim_limit=1., fixed_trim=[0., 0., 0.],
                 extra_mass_kg=0., speed_min_kmh=100., speed_max_kmh=1300., max_load_g=None,
-                speed_samples=9, load_samples=9, structural_limits=True, timestep_hz=48.,low_speed_load_cap=True,global_load_cap_g=25.,
+                speed_samples=9, load_samples=9, structural_limits=True, timestep_hz=48.,low_speed_load_cap=False,global_load_cap_g=64.,reference_load_cap=True,
                 sampling='adaptive',sep_tolerance_mps=.5,surface_resolution=601,sep_contour_levels_mps=[100.,0.,-100.,-200.,-400.],sweep_percent=0.,flaps_percent=0.,instructor=True,
                 aircraft_settings={},compare_instructor=False,entries=None,instructor_model='steady',instructor_authority_mode='direct',trim_solver_mode='nested',roll_leveling=False,turn_response_mode='settled')
 
@@ -94,8 +94,11 @@ def settings(values=None):
         result[key]=int(result[key])
     result['sep_contour_levels_mps']=contour_levels(result['sep_contour_levels_mps'])
     if result['speed_min_kmh']>=result['speed_max_kmh']: raise ValueError('Maximum speed must exceed minimum speed')
-    for key in ['afterburner','structural_limits','instructor','compare_instructor','torque_gyro','roll_leveling','low_speed_load_cap']:
+    for key in ['afterburner','structural_limits','instructor','compare_instructor','torque_gyro','roll_leveling','low_speed_load_cap','reference_load_cap']:
         if not isinstance(result[key],bool): raise ValueError(key+' must be true or false')
+    # The frozen chart domain is always intersected with this aircraft's
+    # native speed and wing-force limits, including per-aircraft overrides.
+    if result['reference_load_cap']:result['structural_limits']=True
     if result['compare_instructor'] and len(result['aircraft'])!=1:
         raise ValueError('Select one aircraft to compare Instructor on/off')
     if result['engine_control_mode'] not in ('automatic','quasi_steady'):raise ValueError('Unknown engine control mode')
@@ -982,9 +985,13 @@ class TrimSolver:
 
 
             from em_trim_numerics import jacobian
+            from em_mach_events import rough_mach,project_state
+            mach=derivative_base['result']['air']['mach']
+            project=(lambda q:project_state(self,speed,load,q,mach)) if rough_mach(self,mach) else None
             sample=(lambda q:self.operating_point(speed,load,q,propulsion_override=base['propulsion'],_search=defer_reporting)) if freeze_propulsion else evaluate_x
             last_jacobian=jacobian(x,derivative_base,sample,self.derivative_branch,steps,
-                [1.,.5,1.5,2.,.25,-.5,-1.,-1.5,-2.,.1,3.,4.,5.,-.1,.05,-.05,.01,-.01])
+                [1.,.5,1.5,2.,.25,-.5,-1.,-1.5,-2.,.1,3.,4.,5.,-.1,.05,-.05,.01,-.01],
+                project=project,actual_step=project is not None)
             return last_jacobian
         bounds=self.trim_bounds
         x0=np.clip(initial,np.asarray(bounds[0])+1e-6,np.asarray(bounds[1])-1e-6)
@@ -1023,6 +1030,10 @@ class TrimSolver:
 
 
         x=x0.copy(); value=evaluate_x(x)
+        from em_mach_events import rough_mach,project_state
+        def native_proposal(q,base):
+            mach=base['result']['air']['mach']
+            return project_state(self,speed,load,q,mach) if rough_mach(self,mach) else q
         prop_blocked=(self.is_prop and getattr(self.engine,'no_resolved_seed',False)
                       and not value['propulsion']['converged'])
         predictor=getattr(self,'_trim_predictor',None)
@@ -1036,7 +1047,7 @@ class TrimSolver:
                 delta/=max(1.,float(np.max(abs(delta)/[3.,10.,.2,.2,.2])))
                 advanced=False
                 for factor in (1.,.5,.25):
-                    q=np.clip(x+factor*delta,*bounds);v=evaluate_x(q)
+                    q=native_proposal(np.clip(x+factor*delta,*bounds),value);v=evaluate_x(q)
                     if balanced(v) or np.linalg.norm(v['residual'])<np.linalg.norm(value['residual']):
                         dx=q-x;den=float(dx.dot(dx))
                         if den>1e-12:
@@ -1079,7 +1090,7 @@ class TrimSolver:
             delta/=scale
             norm=np.linalg.norm(value['residual']);accepted=False
             for factor in [1.,.5,.25,.1]:
-                trial_x=np.clip(x+delta*factor,*bounds);trial=evaluate_x(trial_x)
+                trial_x=native_proposal(np.clip(x+delta*factor,*bounds),value);trial=evaluate_x(trial_x)
                 if balanced(trial) or np.linalg.norm(trial['residual'])<norm:
                     x,value=trial_x,trial;accepted=True;break
             if not accepted:break

@@ -4,7 +4,7 @@ SPEED_KMH=300.
 LOAD_G=8.
 LOWER_SPEED_KMH=200.
 LOWER_LOAD_G=3.6
-GLOBAL_LOAD_G=25.
+GLOBAL_LOAD_G=64.
 ANCHOR_MARGIN_G=.05
 
 
@@ -12,6 +12,9 @@ def ceiling(solver,speed):
     limit=solver.config.get('max_load_g') or 64.
     if not getattr(solver,'chart_search',False):return limit
     limit=min(limit,solver.config.get('global_load_cap_g',GLOBAL_LOAD_G))
+    if solver.config.get('reference_load_cap',False):
+        from em_reference_envelope import reference_ceiling
+        return min(limit,reference_ceiling(speed))
     if not solver.config.get('low_speed_load_cap',True):return limit
     if speed>=SPEED_KMH:return limit
     limit=min(limit,LOAD_G)
@@ -25,6 +28,16 @@ def ceiling(solver,speed):
 def description(solver,speed):
     if not getattr(solver,'chart_search',False):return None
     limit=ceiling(solver,speed)
+    if solver.config.get('reference_load_cap',False):
+        from em_reference_envelope import reference_values, TOLERANCE_G, TOLERANCE_DPS, REFERENCE_CONDITIONS
+        base,reference=reference_values(speed)
+        basis='Frozen I-153 / BI / F-16XL SB flutter-on composite + min(2 deg/s, 1 g)'
+        if limit<reference:basis='user-selected global load search cap'
+        if solver.config.get('max_load_g')==limit:basis='user-selected plot load ceiling'
+        return dict(load_g=limit,physical_limit=False,basis=basis,
+            reference_load_g=base,tolerance_g=TOLERANCE_G,tolerance_dps=TOLERANCE_DPS,
+            applied_margin_g=reference-base,frozen=True,
+            reference_conditions=REFERENCE_CONDITIONS,anchors=[])
     low_speed=solver.config.get('low_speed_load_cap',True) and speed<SPEED_KMH
     lower_speed=low_speed and speed<=LOWER_SPEED_KMH
     anchors=[a for a in getattr(solver,'chart_load_anchors',[]) if low_speed and speed<a['speed_kmh'] and max(1.1,a['upper_load_g'])<=limit+1e-10]

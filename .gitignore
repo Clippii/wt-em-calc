@@ -57,6 +57,9 @@
 !/scripts/em_level_fold.py
 !/scripts/em_level_limit.py
 !/scripts/em_load_limits.py
+!/scripts/em_mach_events.py
+!/scripts/em_reference_envelope.py
+!/scripts/em_search_region_data.py
 !/scripts/em_operating.py
 !/scripts/em_parameter.py
 !/scripts/em_pitch_limit.py
@@ -133,7 +136,12 @@
 !/app/*.html
 !/app/release.json
 !/app/icons/
-!/app/icons/*.png
-!/app/icons/*.svg
+!/app/icons/neothunderism-16.png
+!/app/icons/neothunderism-32.png
+!/app/icons/neothunderism-180.png
+!/app/icons/neothunderism-192.png
+!/app/icons/neothunderism-512.png
+!/app/icons/neothunderism-source.png
+!/app/icons/neothunderism-favicon-source.png
 !/app/vendor/
 !/app/vendor/*.js

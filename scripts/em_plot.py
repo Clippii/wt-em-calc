@@ -74,7 +74,8 @@ def smooth_surface(data,aircraft):
     xs=np.unique(np.concatenate([xs,[c['speed_kmh'] for c in columns],[c['speed_kmh'] for c in outline]]));nx=len(xs)
 
 
-    uncertain=aircraft.get('interpolation',{}).get('unresolved_speed_intervals',[])
+    interpolation=aircraft.get('interpolation',{})
+    uncertain=interpolation.get('unresolved_speed_intervals',[])+interpolation.get('mach_transition_intervals',[])
     separators=[]
     for lo,hi in uncertain:
         cuts=[lo,*sorted(c['speed_kmh'] for c in columns if lo<c['speed_kmh']<hi),hi]
@@ -109,10 +110,17 @@ def smooth_surface(data,aircraft):
     lower=np.where(fitted,limits[:,0],np.where(sampled,sampled_limits[:,0],1.))
     upper=np.where(np.isfinite(caps),caps,np.where(sampled,sampled_limits[:,1],lower))
     global_cap=data['settings'].get('global_load_cap_g')
+    reference_cap=None
+    if data['settings'].get('reference_load_cap',False):
+        from em_reference_envelope import reference_ceiling
+        reference_cap=np.array([reference_ceiling(float(x)) for x in xs])
+        caps=np.minimum(caps,reference_cap)
+        upper=np.minimum(upper,reference_cap)
     if global_cap is not None:
         caps=np.minimum(caps,global_cap)
         upper=np.minimum(upper,global_cap)
-    if data['settings'].get('low_speed_load_cap',False):
+    legacy_low_cap=data['settings'].get('low_speed_load_cap',False) and reference_cap is None
+    if legacy_low_cap:
         below=xs<300.
         caps[below]=np.minimum(caps[below],8.)
         upper[below]=np.minimum(upper[below],8.)
@@ -129,7 +137,7 @@ def smooth_surface(data,aircraft):
 
 
     solved_speeds=np.isin(xs,[c['speed_kmh'] for c in columns])
-    for lo,hi in aircraft.get('interpolation',{}).get('unresolved_speed_intervals',[]):
+    for lo,hi in uncertain:
 
 
         z[:,(xs>lo)&(xs<hi)&~solved_speeds]=np.nan
@@ -148,10 +156,11 @@ def smooth_surface(data,aircraft):
         rate=math.degrees(9.8100004196167*math.sqrt(max(0.,cap*cap-1.))/(x/3.6)) if np.isfinite(cap) else None
         boundary.append(dict(speed_kmh=float(x),turn_dps=rate if verified else None,
                              at_plot_ceiling=bool(np.isfinite(cap) and (
+                                 reference_cap is not None and abs(cap-reference_cap[i])<1e-5 or
                                  global_cap is not None and abs(cap-global_cap)<1e-5 or
                                  data['settings']['max_load_g'] is not None and abs(cap-data['settings']['max_load_g'])<1e-5 or
-                                 data['settings'].get('low_speed_load_cap',False) and x<300. and abs(cap-8.)<1e-5 or
-                                 data['settings'].get('low_speed_load_cap',False) and lower_speed_cap and x<=LOWER_SPEED_KMH and abs(cap-LOWER_LOAD_G)<1e-5 or
+                                 legacy_low_cap and x<300. and abs(cap-8.)<1e-5 or
+                                 legacy_low_cap and lower_speed_cap and x<=LOWER_SPEED_KMH and abs(cap-LOWER_LOAD_G)<1e-5 or
                                  any(c['boundary_status']=='plot ceiling' for c in outline[index:index+2])))))
 
 
@@ -383,6 +392,9 @@ def add_boundary_limits(aircraft, source):
             edge=point.get('edge_kind')
             label=edges.get(edge,label)
             if edge=='Roll-leveling boundary transition':label='Roll-leveling transition · '+label
+        if point.get('mach_event'):label='Mach transition · '+label
+        if point.get('native_mach_uncertainty'):
+            label+=' · Sampled numerical uncertainty; interpolation tolerance not established'
         if point.get('at_plot_ceiling'):label=search
         if point['turn_dps'] is None:label='Unresolved boundary; aircraft limit not established'
         point['limit_label']=label
