@@ -9,28 +9,50 @@ import sys
 import threading
 import time
 import uuid
+from missile_names import NAMES
 
 ROOT = Path(__file__).resolve().parent
 LOCK = threading.Lock()
-WORKER = ThreadPoolExecutor(max_workers=1, thread_name_prefix='missile-job')
+MAX_WORKERS = min(4, max(1, int(os.environ.get('WT_MISSILE_WORKERS', min(4, max(1, (os.cpu_count() or 2)//2))))))
+MAX_PENDING = 8
+WORKER = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix='missile-job')
 JOBS = {}
 
 
 @lru_cache(maxsize=1)
 def metadata():
     index = json.loads((ROOT / 'missile_model/launch-profiles/index.json').read_text())
-    names = {'us_aim9l_sidewinder':'AIM-9L', 'us_aim9m_sidewinder':'AIM-9M',
-             'us_aim7f_sparrow':'AIM-7F', 'cn_pl15':'PL-15', 'su_r_73':'R-73'}
     entries = []
     for row in index['profiles']:
         key = row['path'].removesuffix('.json')
-        entries.append(dict(id=key, name=names.get(key, key.replace('_',' ').upper()), family=row['family']))
+        if 'default' in key.lower().split('_'):
+            continue
+        profile = json.loads((ROOT / 'missile_model/launch-profiles' / row['path']).read_text())
+        rocket = profile['properties']['rocket']; guidance = profile['properties']['guidance']
+        # Presentation data comes from the same exported properties used by the
+        # worker. Motor delays are measured on each motor's own controlled clock;
+        # the guidance schedule is a gain ramp, not an extra blanket pause.
+        timing = dict(motor_delays_s=[motor['delay'] for motor in guidance['motors']],
+                      guidance_gain=[dict(time_s=point[0], gain=point[2]) for point in guidance['guidance']['time_gain']],
+                      seeker_search_delay_s=guidance['manager']['lock_timeout'],
+                      lock_after_launch=bool(rocket['guidance'].get('lockAfterLaunch',False)),
+                      warm_up_s=rocket['guidance'].get('warmUpTime',0.),
+                      proximity_delay_s=rocket.get('proximityFuse',{}).get('timeOut',.3) if rocket.get('hasProximityFuse',False) else None)
+        entries.append(dict(id=key, name=NAMES.get(key, key.replace('_',' ').upper()), family=row['family'],timing=timing))
+    # Keep one base configuration for each displayed name, not mounting aliases.
+    # The localization also labels AIM-4D as AIM-4G; prefer the matching G profile.
+    unique = {}
+    for entry in sorted(entries, key=lambda item: (-1 if item['id']=='us_aim4g_falcon' else len(item['id']), item['id'])):
+        unique.setdefault(entry['name'].strip().casefold(), entry)
+    entries = sorted(unique.values(), key=lambda item: (item['name'].casefold(), item['id']))
     return dict(missiles=entries, defaults=dict(missile='us_aim9l_sidewinder', duration=60,
-                launch=dict(position=[0,5000,0],velocity=[300,0,0],angles=[0,0,0]),
+                launcher=dict(position=[0,5000,0],velocity=[300,0,0],angles=[0,0,0]),
                 target=dict(position=[4000,5000,0],velocity=[200,0,0],angles=[0,0,0])),
                 model_status='experimental', profile_build='2.59.0.34',
+                max_concurrent_jobs=MAX_WORKERS,
                 assumptions='Ideal observability; geometric tracking limits; constant-velocity point target; flat ground; no wind.',
-                initialization='Post-release missile state; ready prelaunch seeker initialization with geometric limits and authored lock-before/after-launch behavior.')
+                units=dict(position='m',velocity='m/s',angles='degrees',time='s'),
+                initialization='Launcher aircraft at release; coincident body-aligned mount; recovered launch processing and profile timing; ready prelaunch seeker with geometric limits and authored lock-before/after-launch behavior.')
 
 
 def _run(key, config, cancel):
@@ -79,10 +101,12 @@ def start(config):
     if not isinstance(config,dict): raise ValueError('Expected a scenario object')
     if config.get('missile') not in {m['id'] for m in metadata()['missiles']}: raise ValueError('Select a supported missile')
     with LOCK:
-        if sum(job['status'] in ('queued','running') for job in JOBS.values())>=2:
+        if sum(job['status'] in ('queued','running') for job in JOBS.values())>=MAX_PENDING:
             raise ValueError('Missile simulation queue is full. Wait for the current run to finish.')
         old = sorted((key for key,j in JOBS.items() if 'finished' in j), key=lambda key:JOBS[key]['finished'])
-        for key in old[:-3]: del JOBS[key]
+        # Parallel short jobs can finish before their client's next poll.
+        # Retain several full comparisons so another submission cannot erase them.
+        for key in old[:-32]: del JOBS[key]
         key=uuid.uuid4().hex; event=threading.Event()
         JOBS[key]=dict(id=key,status='queued',cancel=event)
         WORKER.submit(_run,key,config,event)

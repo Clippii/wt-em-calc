@@ -156,3 +156,9 @@
 !/scripts/missile_model/*.json
 !/scripts/missile_model/launch-profiles/
 !/scripts/missile_model/launch-profiles/*.json
+
+!/scripts/missile_telemetry.py
+!/scripts/missile_names.py
+!/scripts/missile_fast.py
+!/scripts/missile_backend.py
+!/scripts/build_missile_backend.py
