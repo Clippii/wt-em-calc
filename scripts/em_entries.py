@@ -59,11 +59,6 @@ def compute_entries(config,progress=None,cancelled=None,preview=None):
             condition=entry['settings']
             mode=('RB' if condition['instructor'] else 'SB') if condition['instructor']!=condition['torque_gyro'] else (
                 f"Instructor {'on' if condition['instructor'] else 'off'} · torque/gyro {'on' if condition['torque_gyro'] else 'off'}")
-            if condition['engine_control_mode']=='quasi_steady':mode+=' · Quasi-steady'
-            pass
-            pass
-            if condition['instructor'] and condition.get('instructor_authority_mode')=='direct':mode+=' · Direct Instructor authority'
-            pass
             if not condition['structural_limits']:mode+=' · Flutter off'
             a.update(id=entry['id'],aircraft_id=entry['aircraft_id'],color=COLORS[index],
                      name=f"{AIRCRAFT[entry['aircraft_id']]['name']} · {index+1} · {mode}")

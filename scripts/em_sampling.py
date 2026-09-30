@@ -55,7 +55,7 @@ def compute_cached(config,progress=None,cancelled=None,preview=None):
 
 
 def outline_column(column):
-    keys=('speed_kmh','boundary','lower_boundary','boundary_status','boundary_reason','load_search_limit','mach_branch')
+    keys=('speed_kmh','boundary','lower_boundary','boundary_status','boundary_reason','load_search_limit','mach_branch','discontinuity')
     return dict({k:column.get(k) for k in keys},
                 points=[p for p in column['points'] if p['load_g']==1.])
 
@@ -1664,8 +1664,9 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
     start=time.monotonic();cfg_json=json.dumps(config,sort_keys=True)
     conditions={name:aircraft_settings(config,name) for name in config['aircraft']}
     redlines={name:speed_limits(load(name),cfg) for name,cfg in conditions.items()}
-    from em_mach_events import aircraft_catalog as mach_catalog,speed_knots,crossings,transition_width
+    from em_mach_events import aircraft_catalog as mach_catalog,speed_knots,crossings,transition_width,discontinuity_regions,overlaps
     mach_info={name:mach_catalog(load(name),cfg) for name,cfg in conditions.items()}
+    discontinuities={name:discontinuity_regions(mach_info[name],cfg) for name,cfg in conditions.items()}
     mach_intervals={name:[] for name in conditions}
     workers=WORKERS;results={name:{} for name in config['aircraft']}
     output=dict(settings=config,aircraft=[],sampling='adaptive',backend=BACKEND,workers=workers,
@@ -1674,7 +1675,7 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
                      'Constant fuel and intact components','Propeller torque/gyro selected per aircraft: off for RB by default, on for SB; axial propwash retained','Still air; out of ground effect; retractable gear and airbrakes stowed; fixed propeller-aircraft gear retains its drag',
                      'Propellers: automatic or idealized manual engine management selected per aircraft; closed radiators and frozen boost supply; complete aircraft phase outputs averaged; manual global optimum and periodic flight trajectory not certified',
                      'Zero sideslip preferred; failed interior equilibria may use solved sideslip up to 2 degrees, with unchanged force/moment closure; not a minimum-drag sideslip optimization',
-                     'Requested flap percentage held at every operating point, assumed achievable; intact flaps, no travel time or damage',
+                     'Fixed flap extension; speed domain ends at the selected extension’s automatic IAS/Mach limit or intact-flap damage threshold; flap travel and damage transients omitted',
                      'Steady Instructor AoA schedule approximation: native Mach/flap/sweep angle targets, settled wing-angle adjustments, native rate feedback and reduced moment balance, with full physical trim and control-power loss. Same constraint at boundary and interior. Transient overshoot, delay, retained trim and overload reserve/release are omitted',
                      'Manual fixed sweep; native reachability limits retained; 0% forward, 100% aft',
                      'VTOL, reverse and thrust-vectoring commands zero; auxiliary rocket boosters off',
@@ -1709,7 +1710,7 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
             first=next(iter(cols.values()),None)
             snapshot['aircraft'].append(dict(AIRCRAFT[name],id=name,color=['#38c9d7','#ffa66b'][index],
                 settings=conditions[name],columns=ordered,points=points,
-                interpolation=coverage(config),
+                interpolation=dict(coverage(config),native_discontinuities=discontinuities[name],mach_approximations=mach_info[name].get('approximations',[])),
                 instructor_approximation=profile(load(name),conditions[name]) if conditions[name]['instructor'] else None,
                 boundary_columns=[outline_column(c) for c in sorted(
                     {**boundary_probes[name],**{c['speed_kmh']:c for c in ordered}}.values(),key=lambda c:c['speed_kmh'])],
@@ -1821,6 +1822,7 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
                     and ordered[first]['boundary_reason'] in ('stall','Instructor pitch','control')):
                 edge_tasks.append((name,cfg_json,ordered[first-1],ordered[first],'stall'))
             for left,right in zip(ordered,ordered[1:]):
+                if overlaps(discontinuities[name],left['speed_kmh'],right['speed_kmh']):continue
                 kinds={c['boundary_reason'] for c in (left,right)}
                 if (all(c['boundary_status']=='verified limit' for c in (left,right)) and
                         (kinds=={'stall','wing force'} or
@@ -1915,6 +1917,7 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
         checked_probes={name:{} for name in results};point_check_requests=set()
         def schedule_speed(name,lo,hi,depth,point_load=None,point_speed=None):
             nonlocal cache_hits,scheduled_speed
+            if overlaps(discontinuities[name],lo,hi):return
             columns=results[name];prior_speeds=tuple(sorted(columns))
             mid=(lo+hi)*.5 if point_load is None else speed_check_position(lo,hi)
             if point_speed is not None:mid=point_speed
@@ -2154,6 +2157,7 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
             for name,pairs in spans.items():
                 edge_columns={**boundary_probes[name],**results[name]}
                 for lo,hi in pairs:
+                    if overlaps(discontinuities[name],lo,hi):continue
                     if hi-lo<=speed_stop:continue
                     left,right=edge_columns[lo],edge_columns[hi]
                     if not any(c.get('boundary') for c in (left,right)):continue
@@ -2209,6 +2213,7 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
             tasks=[];scheduled_raster=set()
             for name,columns in results.items():
                 for lo,hi in intervals[name]+terminal_speed_intervals[name]:
+                    if overlaps(discontinuities[name],lo,hi):continue
                     if hi-lo>raster_step:continue
                     for speed in raster[(raster>lo)&(raster<hi)]:
                         speed=float(speed)
@@ -2280,6 +2285,7 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
             ordered=[columns[v] for v in sorted(columns)]
             existing=[c['level_endpoint_bracket_kmh'] for c in ordered if c.get('level_endpoint_bracket_kmh')]
             for left,right in zip(ordered,ordered[1:]):
+                if overlaps(discontinuities[name],left['speed_kmh'],right['speed_kmh']):continue
                 if any(lo<=left['speed_kmh'] and right['speed_kmh']<=hi for lo,hi in existing):continue
                 levels=[next((p for p in c['points'] if p['valid'] and p['load_g']==1.),None)
                         for c in (left,right)]
@@ -2311,6 +2317,7 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
         seam_interiors={name:[] for name in results};seam_boundaries={name:[] for name in results};seam_futures={}
         for name,columns in results.items():
             for lo,hi in sorted(set(intervals[name]+terminal_speed_intervals[name]+mach_intervals[name])):
+                if overlaps(discontinuities[name],lo,hi):continue
                 if hi-lo>2.*speed_tolerance(config):continue
                 pair=[columns[v] for v in (lo,hi)]
                 if not all(c.get('lower_boundary') and c.get('boundary') and
@@ -2320,6 +2327,7 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
                 future=pool.submit(sample_with_history,check_interior,task,dict(entry_histories[name]))
                 seam_futures[future]=(name,False)
             for lo,hi in boundary_intervals(intervals[name]+terminal_speed_intervals[name]+mach_intervals[name],2.*speed_tolerance(config)):
+                if overlaps(discontinuities[name],lo,hi):continue
                 pair=[columns[v] for v in (lo,hi)]
                 support=[{k:c[k] for k in ('speed_kmh','points','boundary','lower_boundary','boundary_status','boundary_reason')} for c in pair]
                 task=(name,json.dumps(conditions[name],sort_keys=True),(lo+hi)*.5,support)
@@ -2363,6 +2371,8 @@ def compute_adaptive(config,progress=None,cancelled=None,preview=None):
                                            c['speed_interval_kmh'][0]<=span[0] and c['speed_interval_kmh'][1]>=span[1]
                                            for c in seam_boundaries[name])],boundary_checks=boundary_checks[name],
                                    mach_transition_intervals=mach_intervals[name],mach_events=mach_info[name]['events'],
+                                   native_discontinuities=discontinuities[name],
+                                   mach_approximations=mach_info[name].get('approximations',[]),
                                    certified_speed_interiors=seam_interiors[name],
                                    certified_boundary_intervals=seam_boundaries[name],
                                    boundary_refinement_intervals=spans[name],load_checks=sum(len(c['load_checks']) for c in ordered))))

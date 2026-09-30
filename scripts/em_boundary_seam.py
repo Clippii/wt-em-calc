@@ -9,6 +9,8 @@ def check_boundary(task):
                and c['boundary']['valid'] and c['boundary'].get('envelope_limit') for c in pair):return None
     left,right=[c['boundary'] for c in pair]
     lo,hi=left['speed_kmh'],right['speed_kmh']
+    from em_mach_events import solver_regions,overlaps
+    if overlaps(solver_regions(solver),lo,hi):return None
     if not 0.<hi-lo<=2.*speed_tolerance(solver.config):return None
     tolerance=turn_tolerance(solver.config['sep_tolerance_mps'])
 
@@ -113,10 +115,13 @@ def apply_outline(boundary,certificates):
                 if certificate.get('native_mach_uncertainty'):
                     point.update(edge_kind='Mach transition; sampled numerical uncertainty',
                         native_mach_uncertainty=certificate['native_mach_uncertainty'])
-            if transition and sample['speed_kmh'] in transition:
+            if transition and sample['speed_kmh'] in transition and not certificate.get('mach_event'):
                 point.update(speed_kmh=sum(transition)*.5,sample_speed_kmh=sample['speed_kmh'],
                              vertical_edge=True,edge_kind=certificate.get('transition_kind','Roll-leveling boundary transition'))
             points.append(point)
+        if transition and certificate.get('mach_event'):
+            points.append(dict(speed_kmh=sum(transition)*.5,turn_dps=None,
+                               at_plot_ceiling=False,edge_kind='Native Mach discontinuity'))
         boundary=[p for p in boundary if not lo<=p['speed_kmh']<=hi]+points
         boundary.sort(key=lambda p:p['speed_kmh'])
     return boundary

@@ -42,12 +42,15 @@ DEFAULTS = dict(aircraft=REFERENCE, altitude_m=0., fuel_percent=30., throttle=1.
                 extra_mass_kg=0., speed_min_kmh=100., speed_max_kmh=1300., max_load_g=None,
                 speed_samples=9, load_samples=9, structural_limits=True, timestep_hz=48.,low_speed_load_cap=False,global_load_cap_g=64.,reference_load_cap=True,
                 sampling='adaptive',sep_tolerance_mps=.5,surface_resolution=601,sep_contour_levels_mps=[100.,0.,-100.,-200.,-400.],sweep_percent=0.,flaps_percent=0.,instructor=True,
-                aircraft_settings={},compare_instructor=False,entries=None,instructor_model='steady',instructor_authority_mode='direct',trim_solver_mode='nested',roll_leveling=False,turn_response_mode='settled')
+                aircraft_settings={},compare_instructor=False,entries=None,instructor_model='steady',instructor_authority_mode='direct',trim_solver_mode='nested',roll_leveling=False,turn_response_mode='settled',mach_curve_mode='native')
+
+# Backend-only opt-in: mach_curve_mode='continuous' enables the selective tanh
+# approximation; 'native' (default) keeps native arithmetic and gap handling.
 
 
 AIRCRAFT_SETTINGS = frozenset(('altitude_m','fuel_percent','throttle','afterburner',
     'trim_mode','trim_limit','fixed_trim','extra_mass_kg','structural_limits','turn_response_mode',
-    'timestep_hz','sweep_percent','flaps_percent','instructor','instructor_model','instructor_authority_mode','engine_control_mode','aircraft_trim_mode','trim_solver_mode','torque_gyro','roll_leveling'))
+    'timestep_hz','sweep_percent','flaps_percent','instructor','instructor_model','instructor_authority_mode','engine_control_mode','aircraft_trim_mode','trim_solver_mode','torque_gyro','roll_leveling','mach_curve_mode'))
 
 
 def contour_levels(values):
@@ -89,6 +92,7 @@ def settings(values=None):
         if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or not low<=value<=high:
             raise ValueError(f'{key} must be between {low} and {high}')
         result[key]=float(value)
+    result['flaps_percent']=int(math.floor(result['flaps_percent']+.5))
     for key in ['speed_samples','load_samples','surface_resolution']:
         if int(result[key])!=result[key]: raise ValueError(key+' must be an integer')
         result[key]=int(result[key])
@@ -102,6 +106,7 @@ def settings(values=None):
     if result['compare_instructor'] and len(result['aircraft'])!=1:
         raise ValueError('Select one aircraft to compare Instructor on/off')
     if result['engine_control_mode'] not in ('automatic','quasi_steady'):raise ValueError('Unknown engine control mode')
+    if result['mach_curve_mode'] not in ('native','continuous'):raise ValueError('Unknown Mach curve mode')
     
     if result['aircraft_trim_mode']!='discrete':raise ValueError('Aircraft trim mode is unavailable')
     if result['instructor_model']!='steady':raise ValueError('Only the static Instructor boundary is supported')
@@ -332,8 +337,12 @@ class TrimSolver:
 
         self.fm=dict(load_aircraft(name),RollLeveling=self.config['roll_leveling'])
         self.flaps=f32(self.config['flaps_percent']/100.)
+        from flap_model import profile as flap_profile
+        self.flap_profile=flap_profile(self.fm)
         self.instructor_profile=instructor_profile(self.fm,self.config)
         self.model=at_sweep(prepare(self.fm),self.config['sweep_percent']/100.); self.controls=control_properties(self.fm)
+        from em_mach_events import configure_model
+        configure_model(self.model,self.config['mach_curve_mode'])
         self.model['aircraft_trim_mode']=self.config['aircraft_trim_mode']
         self.sweep_rows=sweep_schedule(self.fm);self.has_sweep=len(self.model['wing_family'])>1
         self.is_prop=is_prop(name)
@@ -872,6 +881,9 @@ class TrimSolver:
         sweep_range=available_sweep(self.fm,self.sweep_rows,aero['air']['mach']) if self.has_sweep else (0.,1.)
         if self.has_sweep and not sweep_range[0]-1e-7<=self.model['sweep']<=sweep_range[1]+1e-7:reasons.append('sweep unavailable')
         if self.config['structural_limits']:reasons+=structural
+        from flap_model import violations as flap_violations
+        reasons+=flap_violations(self.flap_profile,self.config['flaps_percent'],
+            aero['air']['ias_u'],aero['air']['mach'],self.config['structural_limits'])
         pitch=None
         if converged and final['stall_margin']>=0. and not reasons:
             pitch=pitch_response(self,final)
@@ -1313,7 +1325,7 @@ def compute_regular(config=None, progress=None, cancelled=None):
     output=dict(settings=config,speeds_kmh=speeds,loads_g=loads,aircraft=[],method='coordinated trim below positive stall; per-aircraft flight model and Ps definition',
                 assumptions=['Full-real manual aerodynamic trim','Full pilot authority; aerodynamic control-power loss retained',
                              'Constant fuel and intact components','Positive-AoA stall enforced; negative-AoA stall not an exclusion; aircraft trim model selected per entry','Still air; out of ground effect; retracted gear/brake',
-                             'Requested flap percentage held at every operating point, assumed achievable; intact flaps, no travel time or damage',
+                             'Fixed flap extension; speed domain ends at the selected extension’s automatic IAS/Mach limit or intact-flap damage threshold; flap travel and damage transients omitted',
                              'Steady Instructor AoA schedule approximation; transient overshoot, delay and control history omitted' if config['instructor'] else 'Instructor off',
                              'Extra mass is a point mass at configured CG; ammunition is not inferred'],
                 validation='Reconstructed kernels have native-code comparisons; this EM solver has not been validated against live flight.')

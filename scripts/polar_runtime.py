@@ -3,7 +3,7 @@ import struct
 from component_assembly import f32, add, sub, mul
 from control_mixer import prepare_rows, curve
 from polar_model import FIELDS
-from mach_cubic import all_coefficients
+from mach_cubic import all_coefficients,continuous_value,native_local_coefficients,needs_continuous_approximation
 
 DATA=0x220000000; STACK=0x220010000; STOP=0x220020000
 CONST_KEYS=['lineClCoeff','AfterCritParabAngle','AfterCritDeclineCoeff',
@@ -62,7 +62,17 @@ def interpolate(a,b,k,machine=None):
     cm=prepare_rows([(x,[lerp(u,v) for u,v in zip(values,curve(b['cm'],x,2))]) for x,_,values in a['cm']])
     out=dict(base=[lerp(x,y) for x,y in zip(a['base'],b['base'])],mode=choose['mode'],combined=choose['combined'],mach=rows,cm=cm)
     for row,c in zip(rows,all_coefficients(out) if machine is None else machine.coefficients(out)):row[5:]=c
+    if a.get('continuous_mach') is not None or b.get('continuous_mach') is not None:
+        approximate_mach(out)
     return out
+
+
+def approximate_mach(runtime):
+    """Opt an EM polar into selective conditioning; raw runtimes stay native."""
+    runtime['continuous_mach']=tuple(native_local_coefficients(tuple(row))
+        if runtime['mode']==3 and needs_continuous_approximation(row,i) else None
+        for i,row in enumerate(runtime['mach']))
+    return runtime
 
 
 def flap_polar(properties,flaps,machine=None):
@@ -89,6 +99,9 @@ def flap_polar(properties,flaps,machine=None):
 
 
 def mach_value(runtime,mach,index):
+    approximation=runtime.get('continuous_mach')
+    if approximation and approximation[index]:
+        return f32(continuous_value(runtime['mach'][index],mach,index,approximation[index]))
     a,b,high,slope,limit,c0,c1,c2,c3=runtime['mach'][index]
     if mach<a:return 0. if index==5 else 1.
     if mach>b:
@@ -126,7 +139,7 @@ def evaluate(runtime,mach,cy_mult=1.):
     low=mul(dl,inv);linel=sub(add(low,low),al)
     if linel>lineh:linel=lineh=mul(add(linel,lineh),.5)
     highden=mul(sub(ah,lineh),sub(ah,lineh));lowden=mul(sub(linel,al),sub(linel,al))
-    ph=f32(sub(dh,mul(effective_slope,lineh))/highden) if highden>f32(4e-19) else 0.
+    ph=f32(sub(ch,add(mul(effective_slope,lineh),cl0))/highden) if highden>f32(4e-19) else 0.
     pl=f32(add(sub(cl0,cl),mul(effective_slope,linel))/lowden) if lowden>f32(4e-19) else 0.
     values=[cl0,cd,ind,slope,ch,cl,ah,al,lineh,linel,ph,pl,focus,cm0,cm1,parab,decline,maxdist,cdafter,clafterl,clafterh,kq,clkq,cy_mult]
     return dict(zip(FIELDS,values))

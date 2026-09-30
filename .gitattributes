@@ -2,3 +2,5 @@
 *.py text eol=lf
 *.yml text eol=lf
 *.cmd text eol=crlf
+# The recovered model manifest hashes the original file bytes.
+scripts/missile_model/** -text whitespace=cr-at-eol

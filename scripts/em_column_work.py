@@ -8,6 +8,11 @@ def bounded_column(task, evaluate, *, certificate=False):
 
     if parent is not None and getattr(parent, 'column', None) == task[:3]:return evaluate()
     solver = worker_solver(task[0], task[1])
+    from numbers import Real
+    from em_mach_events import discontinuous_column
+    if isinstance(task[2],Real):
+        excluded=discontinuous_column(solver,task[2])
+        if excluded is not None:return None if certificate else excluded
 
 
     limits = getattr(solver, '_column_search_limits', {})

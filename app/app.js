@@ -46,7 +46,7 @@ const modeConditions=c=>{const values=conditionsFrom(c);return {...values,trim_s
 const engineModelLabel=c=>c.engine_control_mode==='quasi_steady'?'Quasi-steady · ideal governor':'Dynamic propulsion';
 const aircraftModelLabel=c=>c.aircraft_trim_mode==='quasi_steady'?'Quasi-steady aircraft trim':'Discrete aircraft trim';
 const instructorAuthorityLabel=c=>c.instructor_authority_mode==='direct'?'Direct equilibrium (experimental)':'Original automatic trim';
-const aircraftConditions=(name,c)=>{const values=modeConditions(c);if(!state.meta.aircraft[name].has_flaps)values.flaps_percent=0;if(['jet','rocket'].includes(state.meta.aircraft[name].propulsion))values.engine_control_mode='automatic';return values;};
+const aircraftConditions=(name,c)=>{const values=modeConditions(c);values.flaps_percent=Math.max(0,Math.min(100,Math.round(values.flaps_percent||0)));if(!state.meta.aircraft[name].has_flaps)values.flaps_percent=0;if(['jet','rocket'].includes(state.meta.aircraft[name].propulsion))values.engine_control_mode='automatic';return values;};
 const flightModeLabel=c=>c.instructor!==c.torque_gyro?(c.instructor?'RB':'SB'):
   `Instructor ${c.instructor?'on':'off'} · torque/gyro ${c.torque_gyro?'on':'off'}`;
 const resultConditions=a=>({torque_gyro:true,...(a.settings||{...state.data.settings,...state.data.settings.aircraft_settings?.[a.id]})});
@@ -99,7 +99,7 @@ function renderEntries(){
 function refreshEntrySummaries(){
   for(const row of $('selected-aircraft').children){
     const c=state.conditions[row.dataset.entry];
-    row.querySelector('.entry-summary').textContent=`${fmt(c.altitude_m,0)} m · ${fmt(c.fuel_percent,0)}% fuel · ${fmt(c.throttle*100,0)}% power · ${flightModeLabel(c)}${c.structural_limits===false?' · Flutter off':''}${c.engine_control_mode==='quasi_steady'?' · Steady engine':''} · ${aircraftModelLabel(c)}${c.instructor&&c.instructor_authority_mode==='direct'?' · Direct Instructor authority':''}`;
+    row.querySelector('.entry-summary').textContent=`${fmt(c.altitude_m,0)} m · ${fmt(c.fuel_percent,0)}% fuel · ${fmt(c.throttle*100,0)}% power · ${flightModeLabel(c)}${c.structural_limits===false?' · Flutter off':''}`;
   }
 }
 function addEntry(name,condition){
@@ -151,11 +151,43 @@ function syncLabels(){
   $('flaps').disabled=!aircraft||!aircraft.has_flaps;
   if(aircraft&&!aircraft.has_flaps)$('flaps').value=0;
   $('flaps-label').textContent=$('flaps').value+'%';
+  for(const button of $('flap-modes').children){
+    const percent=aircraft?.flaps?.modes[button.dataset.flapMode];
+    button.disabled=percent==null||!aircraft?.has_flaps;
+    button.setAttribute('aria-pressed',String(!button.disabled&&+$('flaps').value===Math.round(percent)));
+    button.title=button.disabled?'Not available on this aircraft':`${Math.round(percent)}% flaps`;
+  }
+  $('flap-limit-help').textContent=flapLimitLabel(aircraft?.flaps,+$('flaps').value);
   $('sweep-field').hidden=!aircraft?.has_sweep;
   syncAircraftMenu();
   const config=readConfig();refreshEntrySummaries();
   $('stale').hidden=!state.data||(signature(config)===signature(state.data.settings));
 }
+function flapLimitLabel(profile,percent){
+  if(!profile?.available||percent<=0)return '';
+  const fraction=percent/100;
+  const rows=profile.destruction_mps;
+  let damage=rows[rows.length-1][1];
+  if(fraction<=rows[0][0])damage=rows[0][1];
+  else for(let i=1;i<rows.length;i++)if(fraction<=rows[i][0]){
+    const [x0,y0]=rows[i-1],[x1,y1]=rows[i];damage=y0+(y1-y0)*(fraction-x0)/(x1-x0);break;
+  }
+  const automatic=row=>{
+    let [x0,x1,y0,y1]=row;
+    if(x1<x0)[x0,x1,y0,y1]=[x1,x0,y1,y0];
+    if(fraction>y0)return 0;
+    return fraction<=y1?Infinity:Math.max(0,x0+(y0-fraction)*(x1-x0)/(y0-y1));
+  };
+  const ias=Math.min(damage*3.6,automatic(profile.ias_curve)),mach=automatic(profile.mach_curve);
+  return `Flap limit: ${fmt(ias,0)} km/h IAS${Number.isFinite(mach)?` · Mach ${fmt(mach,3)}`:''}. The diagram stops at the first applicable speed limit.`;
+}
+$('flap-modes').addEventListener('click',event=>{
+  const button=event.target.closest('[data-flap-mode]');
+  if(!button||button.disabled||!state.editing)return;
+  const aircraft=state.meta.aircraft[state.entries.find(e=>e.id===state.editing).aircraft_id];
+  $('flaps').value=Math.round(aircraft.flaps.modes[button.dataset.flapMode]);
+  syncLabels();
+});
 function syncAircraftMenu(){
   const normalizeSearch=value=>value.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]/g,'');
   const query=normalizeSearch($('aircraft-search').value);
@@ -320,6 +352,16 @@ function projectedContourPoint(event,a,level){
   }
   return best;
 }
+function speedBoundaryAnnotations(a,data){
+  const labels=a.speed_boundary_labels||[];
+  const threshold=data.settings.speed_min_kmh+.75*(data.settings.speed_max_kmh-data.settings.speed_min_kmh);
+  return labels.map(p=>({name:a.id,x:p.speed_kmh,y:p.dashed ? .5 : p.turn_dps,xref:'x',yref:p.dashed?'paper':'y',
+    text:escapeText(p.text).replace(/\n/g,'<br>'),textangle:-90,showarrow:false,
+    xanchor:p.speed_kmh>threshold?'right':'left',yanchor:'middle',xshift:p.speed_kmh>threshold?-7:7,
+    font:{color:a.color,size:12,family:'WTSymbols, Segoe UI, sans-serif'},bgcolor:'rgba(18,25,37,.85)',
+    visible:!state.hiddenVehicles.has(a.id),
+    hovertext:`${escapeText(a.name)}<br>${escapeText(p.text).replace(/\n/g,'<br>')}<br>${fmt(p.speed_kmh,1)} km/h TAS${p.description?'<br>'+escapeText(p.description):''}`}));
+}
 function inspectContour(a,level,point){
   const load=Math.hypot(1,(point.speed/3.6)*(point.rate*Math.PI/180)/9.8100004196167);
   $('point-title').textContent=`${a.name} · ${fmt(point.speed,1)} km/h · ${fmt(load,2)} g`;
@@ -388,10 +430,14 @@ function renderChart(){
   }
   const ymax=envelopeTop(displayed);
   const layout={paper_bgcolor:'#121925',plot_bgcolor:'#121925',font:{family:'WTSymbols, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif',color:'#a7b7cb',size:11},
+    annotations:displayed.flatMap(a=>speedBoundaryAnnotations(a,data)),
+    shapes:displayed.flatMap(a=>(a.speed_boundary_labels||[]).filter(p=>p.dashed).map(p=>({
+      name:a.id,type:'line',xref:'x',yref:'paper',x0:p.speed_kmh,x1:p.speed_kmh,y0:0,y1:1,
+      line:{color:rgba(a.color,.7),width:1.4,dash:'dash'},visible:!state.hiddenVehicles.has(a.id)}))),
     margin:{l:52,r:18,t:Math.max(38,displayed.length*20),b:46},hovermode:'closest',hoverlabel:{bgcolor:'#202e40',bordercolor:'#40536b',font:{color:'#eff7ff',size:11}},
     xaxis:{title:{text:'True airspeed · km/h',standoff:6,font:{size:11}},range:[data.settings.speed_min_kmh,data.settings.speed_max_kmh],gridcolor:'#253144',zeroline:false,dtick:100,tickfont:{size:10},constrain:'domain'},
     yaxis:{title:{text:'Turn rate · °/s',standoff:6,font:{size:11}},range:[0,ymax],gridcolor:'#253144',zeroline:false,dtick:5,tickfont:{size:10}},
-    legend:{orientation:'h',x:0,y:1.02,yanchor:'bottom',font:{size:10},bgcolor:'rgba(0,0,0,0)',traceorder:'normal',groupclick:'togglegroup'},
+    legend:{orientation:'h',x:0,y:1.02,yanchor:'bottom',font:{size:10},bgcolor:'rgba(0,0,0,0)',traceorder:'normal',groupclick:'togglegroup',itemdoubleclick:false},
     uirevision:state.dataJob+'-'+state.view+'-'+showRejected,dragmode:'pan'};
   if(!$('chart').classList.contains('js-plotly-plot'))$('chart').innerHTML='';
   Plotly.react('chart',traces,layout,{responsive:true,displaylogo:false,scrollZoom:true,modeBarButtonsToRemove:['select2d','lasso2d','toImage']});
@@ -402,6 +448,11 @@ function renderChart(){
     if(hidden)state.hiddenVehicles.delete(group);else state.hiddenVehicles.add(group);
     const indices=event.data.flatMap((trace,i)=>trace.legendgroup===group?[i]:[]);
     Plotly.restyle('chart',{visible:hidden?true:'legendonly'},indices);
+    const visibility={};
+    for(const key of ['annotations','shapes'])$('chart').layout[key]?.forEach((item,i)=>{
+      if(item.name===group)visibility[`${key}[${i}].visible`]=hidden;
+    });
+    if(Object.keys(visibility).length)Plotly.relayout('chart',visibility);
     return false;
   });
   $('chart').removeAllListeners?.('plotly_click');
@@ -450,7 +501,7 @@ async function inspect(a,p){
       ['Propeller control',p.propulsion.controls.automatic.map((auto,i)=>auto?'Automatic':fmt(p.propulsion.controls.commands[i]/255*100,1)+'% manual').join(' / ')],
       ['Compressor stage',(p.propulsion.compressor_stages??p.propulsion.controls.gears).map(v=>v+1).join(' / ')],
       ['Radiators','Closed'],['Landing gear',p.gear_percent===100?'Fixed · deployed':'Retracted']]:[]),
-    ...(state.meta.aircraft[a.aircraft_id||a.id]?.has_flaps?[['Flaps',fmt(p.flaps_percent??0,1)+'%']]:[]),
+    ...(state.meta.aircraft[a.aircraft_id||a.id]?.has_flaps?[['Flaps',fmt(p.flaps_percent??0,0)+'%']]:[]),
     ...(p.sweep_percent==null?[]:[['Fixed wing sweep',fmt(p.sweep_percent,0)+'%'],['Available sweep',p.sweep_available_percent.map(x=>fmt(x,1)).join('–')+'%']])])}</div><div><h3>LIMITS & CONVERGENCE</h3>${dl([
     ['Control authority margin',fmt(p.authority_margin*100,2)+'%'],
     ['Flutter',resultConditions(a).structural_limits===false?'Off · structural limits disabled':'On · structural limits enforced'],

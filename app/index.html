@@ -5,7 +5,7 @@
 // The interface needs the local server for both assets and calculation APIs.
 if (window.location.protocol === 'file:') window.location.replace('http://127.0.0.1:8765/');
 </script>
-<title>neothunderism · EM diagram</title><meta name="description" content="neothunderism — experimental War Thunder energy–maneuverability diagrams.">
+<title>neothunderism · Flight tools</title><meta name="description" content="neothunderism — War Thunder energy–maneuverability diagrams and experimental 3D missile engagements.">
 <link rel="icon" type="image/png" sizes="16x16" href="./icons/neothunderism-16.png?v=4">
 <link rel="icon" type="image/png" sizes="32x32" href="./icons/neothunderism-32.png?v=4">
 <link rel="apple-touch-icon" sizes="180x180" href="./icons/neothunderism-180.png?v=3">
@@ -13,7 +13,8 @@ if (window.location.protocol === 'file:') window.location.replace('http://127.0.
 <script src="./config.js"></script><script defer src="./vendor/plotly.min.js"></script><script defer src="./app.js"></script><script defer src="./release-links.js"></script><link rel="stylesheet" href="./release-links.css"></head>
 <body>
 <header class="topbar"><a class="brand" href="./"><img class="brand-icon" src="./icons/neothunderism-192.png?v=3" width="64" height="40" alt=""><span>neothunderism</span></a><span id="runtime-label" class="local"><i></i> LOCAL WORKSPACE</span><nav id="release-links" class="release-links" aria-label="Downloads and source"><a class="windows-download" href="https://github.com/Leo-TY-H/wt-em-calc/releases/latest" target="_blank" rel="noopener noreferrer">Download for Windows</a></nav></header>
-<div class="workspace">
+<nav class="tool-tabs" role="tablist" aria-label="Flight tools"><button id="em-tab" type="button" role="tab" aria-selected="true" aria-controls="em-workspace">EM diagram</button><button id="missile-tab" type="button" role="tab" aria-selected="false" aria-controls="missile-workspace" tabindex="-1">Missile simulator</button></nav>
+<div class="workspace" id="em-workspace" role="tabpanel" aria-labelledby="em-tab">
 <aside class="sidebar"><form id="scenario">
 <div class="section-heading"><span class="eyebrow">FLIGHT CONDITION</span><button type="button" class="text-button" id="reset">Reset</button></div>
 <fieldset id="aircraft-picker"><legend>Add aircraft <small>Up to eight entries</small></legend>
@@ -34,7 +35,9 @@ if (window.location.protocol === 'file:') window.location.replace('http://127.0.
 <small id="rocket-model-help" hidden>Rocket thrust at the selected throttle and fixed fuel load. The chart does not simulate fuel depletion or burnout.</small>
 
 
-<label id="flaps-field" class="field">Flaps <output id="flaps-label">0%</output><input id="flaps" type="range" min="0" max="100" step="1" value="0"></label>
+<div id="flaps-field" class="field"><label for="flaps">Flaps</label> <output id="flaps-label">0%</output><input id="flaps" type="range" min="0" max="100" step="1" value="0">
+<div id="flap-modes" class="flap-modes" role="group" aria-label="Flap positions"><button type="button" data-flap-mode="combat" aria-pressed="false">Combat</button><button type="button" data-flap-mode="takeoff" aria-pressed="false">Takeoff</button><button type="button" data-flap-mode="landing" aria-pressed="false">Landing</button></div>
+<small id="flap-limit-help" aria-live="polite"></small></div>
 
 <div class="divider"></div>
 
@@ -43,7 +46,7 @@ if (window.location.protocol === 'file:') window.location.replace('http://127.0.
 
 <div class="divider"></div>
 <details><summary>Additional settings</summary><label class="field">Additional mass at CG<div class="input-unit"><input id="extra-mass" type="number" min="0" max="5000" step="10" value="0"><span>kg</span></div></label><label class="field">Simulation rate<div class="input-unit"><input id="timestep" type="number" min="30" max="120" step="1" value="48"><span>Hz</span></div></label></details>
-<details id="legacy-modes"><summary>Legacy modes</summary>
+<details id="legacy-modes" hidden><summary>Legacy modes</summary>
 <div class="field">Flutter<div class="mode-switch" role="radiogroup" aria-label="Flutter"><label><input id="flutter-on" type="radio" name="flutter" value="on" checked><span>On</span></label><label><input id="flutter-off" type="radio" name="flutter" value="off"><span>Off</span></label></div><small>The fixed search region always respects the selected aircraft’s structural load and speed limits. Off applies only to diagnostics with that search region disabled.</small></div>
 </details>
 <div class="apply-settings"><button id="apply-settings-to-all" type="button">Apply these settings to all added aircraft</button><span id="apply-settings-status" class="hint" role="status" aria-live="polite"></span></div>
@@ -71,4 +74,6 @@ if (window.location.protocol === 'file:') window.location.replace('http://127.0.
 
 <footer><span id="runtime-footer">LOCAL ANALYSIS TOOL</span><span id="footer-status">All calculations run on this computer.</span></footer>
 </main></div>
+<section id="missile-workspace" role="tabpanel" aria-labelledby="missile-tab" hidden></section>
+<link rel="stylesheet" href="./missiles.css"><script defer src="./missiles.js"></script>
 </body></html>

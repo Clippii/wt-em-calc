@@ -43,6 +43,10 @@ def catalog():
             row.update(supported=False,reason=str(error))
     from vehicle_names import apply_names
     apply_names(result)
+    from flap_model import profile as flap_profile
+    for name, row in result.items():
+        path = prop_catalog.fm_source(row['fm_id']) if 'fm_id' in row else jet_catalog.source(name)
+        row['flaps'] = flap_profile(json.loads(path.read_text()))
     return result
 
 

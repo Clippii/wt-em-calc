@@ -1,6 +1,7 @@
 import math
 from air_state import cache,speed_of_sound
 from wing_sweep import prepare,select
+from flap_model import profile as flap_profile, limits as flap_limits
 
 
 def speed_limits(fm,config):
@@ -12,15 +13,32 @@ def speed_limits(fm,config):
     mne=strength['mach']*speed_of_sound(config['altitude_m'])*3.6
     if not all(math.isfinite(x) and x>0 for x in (vne,mne)):
         raise ValueError('Aircraft speed redlines must be positive and finite')
-    limit=min(vne,mne)
+    structural=bool(config['structural_limits'])
+    candidates=[dict(kind='VNE',speed_kmh=vne,enforced=structural),
+                dict(kind='Mach limit',speed_kmh=mne,enforced=structural)]
+    flaps=flap_limits(flap_profile(fm),config.get('flaps_percent',0.))
+    if flaps:
+        candidates.append(dict(kind='Flap IAS limit',
+            speed_kmh=flaps['destruction_ias_kmh']/factor,enforced=structural))
+        if flaps['automatic_ias_kmh'] is not None:
+            candidates.append(dict(kind='Flap automatic IAS limit',
+                speed_kmh=flaps['automatic_ias_kmh']/factor,enforced=True))
+        if flaps['automatic_mach'] is not None:
+            candidates.append(dict(kind='Flap automatic Mach limit',
+                speed_kmh=flaps['automatic_mach']*speed_of_sound(config['altitude_m'])*3.6,enforced=True))
+    active=[c for c in candidates if c['enforced']]
+    selected=min(active or candidates,key=lambda c:c['speed_kmh'])
+    limit=selected['speed_kmh']
 
 
     inside=max(0.,limit-.0036)
     return dict(speed_kmh=limit,sample_speed_kmh=inside,
-        kind='VNE' if vne<=mne else 'Mach limit',vne_ias_kmh=strength['ias']*3.6,
+        kind=selected['kind'],vne_ias_kmh=strength['ias']*3.6,
         vne_tas_kmh=vne,mne_tas_kmh=mne,mne=strength['mach'],
-        enforced=bool(config['structural_limits']),
-        convention='Vertical total-speed IAS redline converted to TAS; lower of VNE and MNE; native pointwise checks retained')
+        enforced=bool(active),flaps=flaps,candidates=candidates,
+        deployment_speed_kmh=(flaps['deployment_ias_kmh']/factor
+            if flaps and flaps['deployment_ias_kmh'] is not None else None),
+        convention='Total-speed IAS converted to TAS; lowest enforced wing, Mach, flap damage or automatic flap-extension limit; native pointwise checks retained')
 
 
 def excluded_column(solver, speed):

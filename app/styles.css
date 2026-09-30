@@ -33,3 +33,5 @@ main{padding:18px 14px 22px}
 @media(min-width:1600px){.workspace{grid-template-columns:300px minmax(0,1fr)}main{padding-inline:14px}}
 @media(max-width:1150px){.workspace{grid-template-columns:254px minmax(0,1fr)}main{padding-inline:12px}}
 @media(max-width:760px){.workspace{display:flex;flex-direction:column}.topbar{padding-inline:12px}main{padding:14px 8px}.sidebar{padding:14px 10px}}
+
+.flap-modes{display:flex;gap:5px;margin:12px 0 8px}.flap-modes button{flex:1;padding:6px 3px;border:1px solid var(--line);border-radius:4px;background:var(--panel);font-size:11px}.flap-modes button[aria-pressed=true]{border-color:var(--cyan);color:var(--cyan);background:#16343d}.flap-modes button:disabled{cursor:default;opacity:.35}#flap-limit-help{display:block;color:var(--muted);font-size:10px;line-height:1.5}

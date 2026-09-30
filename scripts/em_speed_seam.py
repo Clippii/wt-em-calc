@@ -17,6 +17,8 @@ def check_interior(task):
     name,config_json,_,pair=task
     solver=worker_solver(name,config_json);left,right=pair
     lo,hi=left['speed_kmh'],right['speed_kmh']
+    from em_mach_events import solver_regions,overlaps
+    if overlaps(solver_regions(solver),lo,hi):return None
     bottom=max(c['lower_boundary']['load_g'] for c in pair)
     top=min(c['boundary']['load_g'] for c in pair)
 

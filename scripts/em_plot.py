@@ -19,6 +19,34 @@ LEVELS=[-400.,-200.,-100.,0.,100.]
 SYMBOL_FONT=Path(__file__).resolve().parents[1]/'app/fonts/wt-symbols.ttf'
 font_manager.fontManager.addfont(SYMBOL_FONT)
 SYMBOL_FAMILY=font_manager.FontProperties(fname=SYMBOL_FONT).get_name()
+SPEED_BOUNDARY_LABELS={
+    'VNE speed boundary':('VNE',''),
+    'Mach limit speed boundary':('VNE','Mach limit'),
+    'Flap IAS limit speed boundary':('Flap speed limit','Structure'),
+    'Flap automatic IAS limit speed boundary':('Flap speed limit','Automatic flap controls'),
+    'Flap automatic Mach limit speed boundary':('Flap speed limit','Automatic flap controls'),
+}
+
+
+def speed_boundary_labels(aircraft, data=None):
+    edges={}
+    for point in aircraft['boundary']:
+        kind=point.get('edge_kind')
+        if (point.get('vertical_edge') and kind in SPEED_BOUNDARY_LABELS
+                and point.get('turn_dps') is not None):
+            edges.setdefault((point['speed_kmh'],kind),[]).append(point['turn_dps'])
+    labels=[dict(speed_kmh=speed,turn_dps=(min(rates)+max(rates))/2,
+                 text='\n'.join(filter(None,SPEED_BOUNDARY_LABELS[kind])))
+            for (speed,kind),rates in edges.items() if max(rates)>min(rates)]
+    redline=aircraft.get('speed_limit') or {}
+    speed=redline.get('deployment_speed_kmh')
+    if (data is not None and speed is not None
+            and data['settings']['speed_min_kmh']<=speed<=data['settings']['speed_max_kmh']
+            and (not redline.get('enforced') or speed<redline['speed_kmh'])):
+        labels.append(dict(speed_kmh=speed,turn_dps=data['plot_max_turn']/2,
+            text='Flap deployment limit',dashed=True,
+            description='Further extension inhibited; higher speeds require prior deployment.'))
+    return labels
 
 
 def nullable_grid(values):
@@ -76,6 +104,8 @@ def smooth_surface(data,aircraft):
 
     interpolation=aircraft.get('interpolation',{})
     uncertain=interpolation.get('unresolved_speed_intervals',[])+interpolation.get('mach_transition_intervals',[])
+    discontinuities=[r['speed_interval_kmh'] for r in interpolation.get('native_discontinuities',[])]
+    uncertain=uncertain+discontinuities
     separators=[]
     for lo,hi in uncertain:
         cuts=[lo,*sorted(c['speed_kmh'] for c in columns if lo<c['speed_kmh']<hi),hi]
@@ -147,6 +177,9 @@ def smooth_surface(data,aircraft):
     for certificate in aircraft.get('interpolation',{}).get('certified_speed_interiors',[]):
         lo,hi=certificate['speed_interval_kmh'];mask=(xs>lo)&(xs<hi)&~solved_speeds
         z[:,mask]=plot_values(columns,certificate,xs[mask],loads[:,mask])
+    # Known discontinuities cannot be restored by exact samples or old seam
+    # certificates. A NaN column splits every contour, including Ps=0.
+    for lo,hi in discontinuities:z[:,(xs>lo)&(xs<hi)]=np.nan
     turn=np.degrees(9.8100004196167*np.sqrt(loads**2-1.)/(xs[None,:]/3.6))
     for i,x in enumerate(xs):
         cap=caps[i]
@@ -192,6 +225,10 @@ def smooth_surface(data,aircraft):
                 boundary[at+1:at+1]=[dict(common,turn_dps=column['boundary']['turn_dps']),dict(common,turn_dps=0.)]
     from em_boundary_seam import apply_outline
     aircraft['boundary']=apply_outline(boundary,aircraft.get('interpolation',{}).get('certified_boundary_intervals',[]))
+    for lo,hi in discontinuities:
+        for point in aircraft['boundary']:
+            if lo<point['speed_kmh']<hi:
+                point.update(turn_dps=None,edge_kind='Native Mach discontinuity')
     aircraft['numerical_boundaries']=[dict(speed_kmh=c['speed_kmh'],turn_dps=c['boundary']['turn_dps'],load_g=c['boundary']['load_g'])
         for c in outline if c['boundary'] and c['boundary_status']=='unresolved numerical boundary']
     aircraft['numerical_gaps']=[dict(speed_kmh=c['speed_kmh'],**gap,
@@ -302,6 +339,15 @@ def export_figure(data, path, selected=None, levels=None, format=None):
             boundary=a['boundary']
             ax.plot([p['speed_kmh'] for p in boundary],[np.nan if p['turn_dps'] is None else p['turn_dps'] for p in boundary],
                     '-',color=color,lw=2.8,zorder=3.5,clip_on=False,label=a['name'])
+            for label in speed_boundary_labels(a,data):
+                cfg=data['settings']
+                left=label['speed_kmh']>cfg['speed_min_kmh']+.75*(cfg['speed_max_kmh']-cfg['speed_min_kmh'])
+                if label.get('dashed'):
+                    ax.axvline(label['speed_kmh'],color=color,lw=1.4,linestyle='--',alpha=.7)
+                ax.annotate(label['text'],(label['speed_kmh'],label['turn_dps']),
+                            xytext=(-7 if left else 7,0),textcoords='offset points',
+                            ha='right' if left else 'left',va='center',rotation=90,color=color,fontsize=9,
+                            bbox=dict(facecolor='white',edgecolor='none',alpha=.85,pad=1.5),zorder=5)
             if data.get('show_numerical_diagnostics') and a.get('numerical_boundaries'):
                 ax.scatter([p['speed_kmh'] for p in a['numerical_boundaries']],[p['turn_dps'] for p in a['numerical_boundaries']],
                            marker='x',color='#b45a12',s=22,label='_nolegend_')
@@ -372,6 +418,8 @@ def add_boundary_limits(aircraft, source):
            'Instructor minimum-speed edge':'Instructor minimum-speed limit',
            'speed-range edge':'Selected speed range; aircraft limit not established',
            'low-speed feasibility edge':'Low-speed feasibility limit'}
+    edges.update({kind:' · '.join(filter(None,label)) for kind,label in SPEED_BOUNDARY_LABELS.items()
+                  if kind.startswith('Flap ')})
     for point in aircraft['boundary']:
         label='Aircraft limit not identified'
         speed=point.get('sample_speed_kmh',point['speed_kmh'])
@@ -397,6 +445,7 @@ def add_boundary_limits(aircraft, source):
             label+=' · Sampled numerical uncertainty; interpolation tolerance not established'
         if point.get('at_plot_ceiling'):label=search
         if point['turn_dps'] is None:label='Unresolved boundary; aircraft limit not established'
+        if point.get('edge_kind')=='Native Mach discontinuity':label='Native Mach discontinuity; curve interrupted'
         point['limit_label']=label
 
 
@@ -405,6 +454,7 @@ def add_boundary_hover(chart, data):
     for aircraft in chart['aircraft']:
         source=sources[aircraft['id']]
         add_boundary_limits(aircraft,source)
+        aircraft['speed_boundary_labels']=speed_boundary_labels(aircraft,chart)
         if source.get('continuous_pull_boundary'):
             for point in aircraft['boundary']:
                 point['ps_mps']=None;point['ps_interpolated']=False
