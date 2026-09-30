@@ -245,6 +245,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers();self.wfile.write(content)
     def do_GET(self):
         path=urlparse(self.path).path
+        if path=='/api/missiles/meta':
+            from missile_service import metadata
+            return self.respond(metadata())
+        if path.startswith('/api/missiles/jobs/'):
+            from missile_service import get
+            key=path.removeprefix('/api/missiles/jobs/')
+            job=get(key)
+            return self.respond(job if job else dict(error='Unknown missile job'),200 if job else 404)
         if path=='/api/health':return self.respond(dict(status='ok',release=release_info()))
         if path=='/api/meta':
             return self.respond(dict(aircraft=dict(AIRCRAFT),defaults=DEFAULTS,latest=None,
@@ -289,6 +297,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/favicon.ico':self.send_response(204);self.end_headers();return
         names={'/':'index.html','/index.html':'index.html','/app.js':'app.js','/config.js':'config.js','/styles.css':'styles.css','/vendor/plotly.min.js':'vendor/plotly.min.js'}
         names.update({'/release.json':'release.json','/release-links.js':'release-links.js','/release-links.css':'release-links.css'})
+        names.update({'/missiles.js':'missiles.js','/missiles.css':'missiles.css'})
         names['/fonts/wt-symbols.ttf']='fonts/wt-symbols.ttf'
         names.update({f'/icons/neothunderism-{size}.png':f'icons/neothunderism-{size}.png' for size in (16,32,180,192,512)})
         names.update({f'/icons/neothunderism-{asset}':f'icons/neothunderism-{asset}' for asset in ('mark.svg','mark.png','app.svg','favicon.svg')})
@@ -304,6 +313,12 @@ class Handler(BaseHTTPRequestHandler):
             if length<0 or length>32768:raise ValueError('Request too large')
             body=json.loads(self.rfile.read(length) or b'{}')
             if not isinstance(body,dict):raise ValueError('Expected a JSON object')
+            if path=='/api/missiles/jobs':
+                from missile_service import start
+                return self.respond(dict(id=start(body)),202)
+            if path.startswith('/api/missiles/jobs/') and path.endswith('/cancel'):
+                from missile_service import cancel
+                return self.respond(dict(cancelled=cancel(path.split('/')[4])))
             if path=='/api/jobs':
                 key=start_job(body);return self.respond(dict(id=key),202)
             if path.startswith('/api/jobs/') and path.endswith('/cancel'):

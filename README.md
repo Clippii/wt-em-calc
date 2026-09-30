@@ -4,6 +4,8 @@
 
 On the website, add aircraft, choose flight conditions, and click **Calculate diagram**. Hover over the plot to inspect results; use the download buttons to save charts or data.
 
+The **Missile simulator** tab accepts independent 3D position, velocity and orientation for the missile and target. It plots the engagement, supports timeline playback and exports JSON. The target follows constant velocity; ideal visibility and radar support retain geometric seeker and flight limits. The model is experimental, and a point-proximity event does not assert aircraft damage.
+
 For Windows 10/11 x64:
 
 1. Extract the entire Windows ZIP into a writable folder.

@@ -3,6 +3,11 @@
 !requirements-plotter.txt
 !scripts/
 !scripts/*.py
+!scripts/missile_model/
+!scripts/missile_model/*.py
+!scripts/missile_model/*.json
+!scripts/missile_model/launch-profiles/
+!scripts/missile_model/launch-profiles/*.json
 !app/
 !app/*.html
 !app/*.js

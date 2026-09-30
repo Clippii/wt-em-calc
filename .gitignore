@@ -145,3 +145,14 @@
 !/app/icons/neothunderism-favicon-source.png
 !/app/vendor/
 !/app/vendor/*.js
+
+!/scripts/missile_worker.py
+!/scripts/missile_service.py
+!/scripts/missile_initialization.py
+!/scripts/missile_support.py
+!/scripts/missile_tracking.py
+!/scripts/missile_model/
+!/scripts/missile_model/*.py
+!/scripts/missile_model/*.json
+!/scripts/missile_model/launch-profiles/
+!/scripts/missile_model/launch-profiles/*.json
