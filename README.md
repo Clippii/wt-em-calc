@@ -45,7 +45,14 @@ validation changes remove another 15% of runtime. Timings exclude interpreter
 startup and use medians of seven runs per configuration, on a Ryzen 9 9950X3D
 with Python 3.12.14 and Rust 1.98.1 on Windows x64.
 
-These compare against the Python path, not the existing Cython build. Full EM
+These Windows measurements compare against the Python path. A separate Linux
+runner comparison with Python 3.11 and the pinned Cython 3.1.4 found Cython
+alone at 0.299 s, standalone Rust at 0.537 s, and the default Cython + Rust
+combination at 0.285 s (about 4.7% faster than Cython). All outputs matched.
+Cython outperformed Rust's ctypes calls for individual EM kernels, so auto
+mode keeps compiled EM kernels preferred. Reproduce the matched comparison with
+`python scripts/test_rust_backend.py --benchmark-cython` after building both
+Cython backends and Rust. Full EM
 diagram and altitude-job speedups have not been measured. The optional batch API
 (`rust_backend.polar_batch`) accelerates a 361-angle sweep about 8x, but is not
 yet used by the adaptive EM solver. Kernel timings are not whole-app speedups.

@@ -40,6 +40,8 @@ def reference(name):
 REF_ASSEMBLY = reference('component_assembly')
 REF_POLAR = reference('polar_f32')
 REF_POLAR.calc_cl.__globals__['_rust'] = None
+for key in ('f32','add','sub','mul'):
+    setattr(REF_POLAR,key,getattr(REF_ASSEMBLY,key))
 sys.path.insert(0, str(rust.ROOT/'scripts/missile_model'))
 import kernels
 import body_integration
