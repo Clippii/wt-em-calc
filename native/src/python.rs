@@ -161,6 +161,14 @@ unsafe fn args<'a>(values: *const O, n: isize, expected: usize) -> Option<&'a [O
         Some(std::slice::from_raw_parts(values, expected))
     }
 }
+unsafe fn all_args<'a>(values: *const O, n: isize) -> &'a [O] {
+    // CPython permits a null argument pointer for a zero-argument FASTCALL.
+    if n == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(values, n as usize)
+    }
+}
 unsafe fn polar_input(s: O, p: O) -> Option<[f64; 24]> {
     dictionary(s, p)?;
     let mut out = [0.; 24];
@@ -638,7 +646,7 @@ unsafe fn clone_graph(s: O, o: O, memo: O) -> Option<Owned> {
         0
     };
     let result = if is_list {
-        owned(api!(11, unsafe extern "C" fn(isize) -> O)(size))?
+        owned(api!(11, unsafe extern "C" fn(isize) -> O)(0))?
     } else {
         dict()?
     };
@@ -649,7 +657,8 @@ unsafe fn clone_graph(s: O, o: O, memo: O) -> Option<Owned> {
         for i in 0..size {
             let v = api!(7, unsafe extern "C" fn(O, isize) -> O)(o, i);
             let child = clone_graph(s, v, memo)?;
-            if api!(12, unsafe extern "C" fn(O, isize, O) -> i32)(result.0, i, child.take()) < 0 {
+            // Keep memo-visible cyclic lists valid even during allocation/GC.
+            if api!(24, unsafe extern "C" fn(O, O) -> i32)(result.0, child.0) < 0 {
                 return None;
             }
         }
@@ -688,7 +697,7 @@ unsafe fn clone_graph(s: O, o: O, memo: O) -> Option<Owned> {
 }
 unsafe extern "C" fn deepcopy(s: O, a: *const O, n: isize) -> O {
     let Some(a) = args(a, n, 2) else {
-        return scalar_fallback(key(s, 59), std::slice::from_raw_parts(a, n as usize));
+        return scalar_fallback(key(s, 59), all_args(a, n));
     };
     let result = (|| {
         // Custom objects, subclasses and tuples delegate as a whole graph. This
@@ -733,7 +742,7 @@ unsafe fn scalar_fallback(reference: O, values: &[O]) -> O {
 }
 unsafe fn scalar_call(s: O, a: *const O, n: isize, op: u32) -> O {
     let reference = key(s, 0);
-    let values = std::slice::from_raw_parts(a, n as usize);
+    let values = all_args(a, n);
     if n != if op == 0 { 1 } else { 2 } {
         return scalar_fallback(reference, values);
     }

@@ -1,4 +1,4 @@
-"""Build and install platform-native Rust kernels with Cargo (no Python ABI)."""
+"""Build native Rust kernels with Cargo; no Python headers/link library needed."""
 import argparse
 import hashlib
 import json

@@ -1,8 +1,8 @@
 """Optional dependency-free Rust kernels; no compilation during app startup.
 
-WT_NUMERIC_BACKEND=auto accelerates Python modules when a verified build exists.
-The existing Cython backend stays preferred for compiled modules. Explicit
-'rust' also uses Rust inside Cython; 'python' disables these kernels entirely.
+WT_NUMERIC_BACKEND=auto uses direct Rust builtins on GIL-enabled CPython, including
+inside compiled modules. Other interpreters use portable ctypes calls and keep
+compiled EM kernels preferred. 'python' disables Rust; 'rust' requires a build.
 """
 import ctypes
 import hashlib

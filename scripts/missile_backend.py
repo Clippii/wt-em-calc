@@ -75,7 +75,8 @@ def _activate_cython():
     return 'compiled'
 
 
-# Compiled scalar transforms beat ctypes packing on the measured Cython path.
+# Direct Rust builtins replace vectors on CPython. Retain compiled transforms
+# when only the slower portable ctypes interface is available.
 RUST_VECTORS_WITH_CYTHON = False
 
 

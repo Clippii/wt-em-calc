@@ -273,6 +273,7 @@ class Parity(unittest.TestCase):
                     with self.assertRaisesRegex(ZeroDivisionError,'float division by zero'):native[i](x,y)
                 else:self.exact(native[i](x,y),expected)
         for i in range(5):
+            with self.assertRaises(TypeError):native[i]()
             args=(object(),) if i==0 else (object(),1.)
             try:refs[i](*args)
             except Exception as error:
