@@ -484,3 +484,120 @@ pub unsafe extern "C" fn wt_matrix_quaternion(input: *const f64, out: *mut f64) 
     std::slice::from_raw_parts_mut(out, 4).copy_from_slice(&chosen);
     u32::from(chosen.iter().all(|v| v.is_finite())) & success()
 }
+
+/// Quaternion (4), vector (3), predicted vector (3). Three distinct sum orders.
+/// Mode 0 rotates propulsion, 1 forms seeker residual, 2 transforms coast LOS.
+#[no_mangle]
+pub unsafe extern "C" fn wt_vector(input: *const f64, mode: u32, out: *mut f64) -> u32 {
+    if input.is_null() || out.is_null() || mode > 2 {
+        return 0;
+    }
+    reset_overflow();
+    let v = std::slice::from_raw_parts(input, 10);
+    let [x, y, z, w] = std::array::from_fn::<_, 4, _>(|i| f(v[i]));
+    let [tx, ty, tz] = [v[4], v[5], v[6]];
+    let (a, b, c, d, e) = if mode == 2 {
+        let nw = mul(-2., w);
+        (
+            mul(x, add(z, z)),
+            mul(add(z, z), y),
+            mul(nw, z),
+            mul(y, nw),
+            mul(x, nw),
+        )
+    } else {
+        (
+            mul(add(z, z), x),
+            mul(y, add(z, z)),
+            mul(add(z, z), w),
+            mul(add(w, w), y),
+            mul(w, add(x, x)),
+        )
+    };
+    let xy = mul(add(x, x), y);
+    let ww = sub(add(mul(w, w), mul(w, w)), 1.);
+    let xx = add(add(mul(x, x), mul(x, x)), ww);
+    let yy = add(add(mul(y, y), mul(y, y)), ww);
+    let zz = add(add(mul(z, z), mul(z, z)), ww);
+    let r = match mode {
+        0 => [
+            add(add(mul(add(d, a), tz), mul(sub(xy, c), ty)), mul(xx, tx)),
+            add(add(mul(sub(b, e), tz), mul(add(c, xy), tx)), mul(yy, ty)),
+            add(mul(zz, tz), add(mul(add(e, b), ty), mul(sub(a, d), tx))),
+        ],
+        1 => [
+            add(
+                sub(add(mul(add(d, a), tz), mul(sub(xy, c), ty)), v[7]),
+                mul(xx, tx),
+            ),
+            add(
+                sub(add(mul(sub(b, e), tz), mul(add(c, xy), tx)), v[8]),
+                mul(yy, ty),
+            ),
+            add(
+                sub(add(mul(add(e, b), ty), mul(sub(a, d), tx)), v[9]),
+                mul(zz, tz),
+            ),
+        ],
+        _ => [
+            add(mul(add(d, a), tz), add(mul(sub(xy, c), ty), mul(xx, tx))),
+            add(mul(sub(b, e), tz), add(mul(yy, ty), mul(add(xy, c), tx))),
+            add(mul(zz, tz), add(mul(add(e, b), ty), mul(sub(a, d), tx))),
+        ],
+    };
+    std::slice::from_raw_parts_mut(out, 3).copy_from_slice(&r);
+    u32::from(r.iter().all(|v| v.is_finite())) & success()
+}
+
+/// Packed body state (21), accelerations (6), dt/time (2), clock rates (4).
+/// Output: updated state (21), displacement/increment (6), orientation (24).
+#[no_mangle]
+pub unsafe extern "C" fn wt_integrate(input: *const f64, out: *mut f64) -> u32 {
+    if input.is_null() || out.is_null() {
+        return 0;
+    }
+    reset_overflow();
+    let v = std::slice::from_raw_parts(input, 33);
+    let dt = f(v[27]);
+    let half = mul(mul(dt, dt), 0.5);
+    let displacement =
+        std::array::from_fn::<_, 3, _>(|i| add(f(v[21 + i] * half), mul(v[3 + i], dt)));
+    let position = std::array::from_fn::<_, 3, _>(|i| add(v[i], displacement[i]));
+    let velocity = std::array::from_fn::<_, 3, _>(|i| add(f(v[21 + i] * dt), v[3 + i]));
+    let increment =
+        std::array::from_fn::<_, 3, _>(|i| add(mul(v[24 + i], half), mul(v[6 + i], dt)));
+    let omega = std::array::from_fn::<_, 3, _>(|i| add(mul(v[24 + i], dt), v[6 + i]));
+    let mut rotation_input = [0.; 7];
+    rotation_input[..4].copy_from_slice(&v[9..13]);
+    rotation_input[4..].copy_from_slice(&increment);
+    let valid = success();
+    let mut rotation = [0.; 24];
+    if super::wt_orientation(rotation_input.as_ptr(), rotation.as_mut_ptr()) == 0 {
+        return 0;
+    }
+    let [vx, vy, vz] = velocity;
+    let distance_step = mul(
+        f(add(add(mul(vz, vz), mul(vy, vy)), mul(vx, vx)).sqrt()),
+        dt,
+    );
+    let elapsed = sub(v[28], v[13]);
+    let clocks = std::array::from_fn::<_, 4, _>(|i| add(mul(v[29 + i], elapsed), v[14 + i]));
+    let r = std::slice::from_raw_parts_mut(out, 51);
+    r[..3].copy_from_slice(&position);
+    r[3..6].copy_from_slice(&velocity);
+    r[6..9].copy_from_slice(&omega);
+    r[9..13].copy_from_slice(&rotation[20..24]);
+    r[13] = f(v[28]);
+    r[14..18].copy_from_slice(&clocks);
+    r[18] = add(v[18], distance_step);
+    r[19] = if v[20] != 0. {
+        add(distance_step, v[19])
+    } else {
+        v[19]
+    };
+    r[20] = 0.;
+    r[21..24].copy_from_slice(&displacement);
+    r[24..27].copy_from_slice(&increment);
+    r[27..].copy_from_slice(&rotation);
+    valid & success() & u32::from(r.iter().all(|v| v.is_finite()))
+}

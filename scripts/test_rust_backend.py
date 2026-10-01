@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 import copy
-from missile_copy import deepcopy as fast_copy
+from missile_copy import deepcopy as fast_copy, validate_flight_numbers as fast_validate
 
 import component_assembly as assembly
 import polar_f32 as polar
@@ -99,6 +99,53 @@ class Parity(unittest.TestCase):
         for args in rows:
             for a,b in zip(accelerated(*args),control_frame.matrix_quaternion(*args)):
                 self.exact(a,b)
+
+    def test_vector_transforms(self):
+        import motor_vector,shared_seeker
+        rng=random.Random(1125)
+        for mode,reference in enumerate((motor_vector.rotate_thrust,shared_seeker.world_residual,shared_seeker.coast_body)):
+            accelerated=rust.vector_function(self.library,lambda *a:self.fail('Unexpected vector fallback'),mode)
+            for i in range(1000):
+                q=[rng.uniform(-1.,1.) for _ in range(4)]
+                vector=[rng.uniform(-100.,100.) for _ in range(3)]
+                args=(q,vector,[rng.uniform(-1.,1.) for _ in range(3)]) if mode==1 else (q,vector)
+                for a,b in zip(accelerated(*args),reference(*args)):self.exact(a,b)
+            args=([0.,-0.,0.,1.],[0.,-0.,0.])
+            if mode==1:args+=([0.,-0.,0.],)
+            for a,b in zip(accelerated(*args),reference(*args)):self.exact(a,b)
+
+    def test_state_validation(self):
+        import state_binary32
+        for state in ({'body':{'position':[1.,2.,3.]}},
+                      {'guidance':{'orientation':{'pid':[[float('nan')]*8,[float('inf')]*8]}}},
+                      {'guidance':{'propulsion':{'pid':[float('-inf')]*8}}}):
+            self.assertIsNone(fast_validate(state))
+            self.assertIsNone(state_binary32.validate_flight_numbers(state))
+        for state in ({'body':{'position':[1.,float('inf'),3.]}},
+                      {'guidance':{'orientation':{'pid':[[0.]*8,[0.]*8,[float('nan')]]}}},
+                      {'guidance':{'propulsion':{'pid':[0.]*8+[float('inf')]}}}):
+            with self.assertRaises(ValueError) as expected:state_binary32.validate_flight_numbers(state)
+            with self.assertRaises(ValueError) as actual:fast_validate(state)
+            self.assertEqual(str(actual.exception),str(expected.exception))
+
+    def test_body_integration(self):
+        accelerated=rust.integrate_function(self.library,lambda *a:self.fail('Unexpected integration fallback'))
+        rng=random.Random(1126)
+        def exact(a,b):
+            if isinstance(a,dict):
+                self.assertEqual(a.keys(),b.keys())
+                for key in a:exact(a[key],b[key])
+            elif isinstance(a,list):
+                self.assertEqual(len(a),len(b))
+                for x,y in zip(a,b):exact(x,y)
+            else:self.exact(a,b)
+        for i in range(1000):
+            vector=lambda:[rng.uniform(-100.,100.) for _ in range(3)]
+            state=dict(position=vector(),velocity=vector(),omega=vector(),quaternion=[rng.uniform(-1.,1.) for _ in range(4)],time=10.,clocks=[1.,2.,3.,4.],distance=20.,water_distance=-0.,water=i%2==0)
+            args=(state,vector(),vector(),rng.uniform(1e-5,.1),10.2,[1.,.5,0.,-.5])
+            result=accelerated(*args)
+            exact(result,body_integration.integrate(*args))
+            self.assertIs(result['state']['quaternion'],result['rotation']['quaternion'])
 
     def test_polars(self):
         rng = random.Random(932)
@@ -195,7 +242,8 @@ class Parity(unittest.TestCase):
             for mode in ('python', 'fast-python', 'rust'):
                 env=dict(os.environ,WT_MISSILE_BACKEND='python' if mode=='python' else 'auto',
                          WT_NUMERIC_BACKEND='rust' if 'rust' in mode else 'python',
-                 WT_BENCH_PREVIOUS_RUST='1' if mode=='previous-rust' else '0')
+                 WT_BENCH_PREVIOUS_RUST='1' if mode=='previous-rust' else '0',
+                 WT_BENCH_PREVIOUS_VECTOR='1' if mode!='rust' else '0')
                 run=subprocess.run([sys.executable,str(rust.ROOT/'scripts/missile_worker.py')],
                                    input=json.dumps(request),capture_output=True,text=True,env=env,timeout=60)
                 self.assertEqual(run.returncode,0,run.stdout+run.stderr)
@@ -238,13 +286,26 @@ def benchmark():
     import aero_vectors
     props=kernels.aero_properties(dict(finsAoaHor=.2,finsAoaVer=.3))
     props.update(axis_quaternion=[0.,0.,0.,1.],cy_table=[])
-    args=(props,5000.,[600.,10.,20.],[0.,0.,0.,1.],[.1,.2,.3])
+    aero_args=(props,5000.,[600.,10.,20.],[0.,0.,0.,1.],[.1,.2,.3])
     aero=rust.aero_function(rust.load(__file__),aero_vectors.forces)
-    pairs['missile aerodynamic forces']=(lambda:aero_vectors.forces(*args,fins=(.1,.2)),lambda:aero(*args,fins=(.1,.2)))
+    pairs['missile aerodynamic forces']=(lambda:aero_vectors.forces(*aero_args,fins=(.1,.2)),lambda:aero(*aero_args,fins=(.1,.2)))
     import control_frame
     matrix=rust.matrix_quaternion_function(rust.load(__file__),control_frame.matrix_quaternion)
     columns=([.8,.6,0.],[-.6,.8,0.],[0.,0.,1.])
     pairs['controller quaternion search']=(lambda:control_frame.matrix_quaternion(*columns),lambda:matrix(*columns))
+    import motor_vector,shared_seeker
+    rotate=rust.vector_function(rust.load(__file__),motor_vector.rotate_thrust,0)
+    residual=rust.vector_function(rust.load(__file__),shared_seeker.world_residual,1)
+    coast=rust.vector_function(rust.load(__file__),shared_seeker.coast_body,2)
+    q=[.1,.2,.3,.9];v=[10.,20.,30.];pred=[.1,.2,.3]
+    pairs['propulsion rotation']=(lambda:motor_vector.rotate_thrust(q,v),lambda:rotate(q,v))
+    pairs['seeker residual']=(lambda:shared_seeker.world_residual(q,v,pred),lambda:residual(q,v,pred))
+    pairs['seeker coast transform']=(lambda:shared_seeker.coast_body(q,v),lambda:coast(q,v))
+    integrate=rust.integrate_function(rust.load(__file__),body_integration.integrate)
+    state=dict(position=[0.,5000.,0.],velocity=[600.,0.,0.],omega=[.1,.2,.3],quaternion=q,time=10.,clocks=[1.,2.,3.,4.],distance=20.,water_distance=0.,water=False)
+    args=(state,[10.,-5.,3.],[.1,-.2,.3],1/48,10.02)
+    pairs['complete body integration']=(lambda:body_integration.integrate(*args),lambda:integrate(*args))
+
     orientation=rust.orientation_function(rust.load(__file__),body_integration.orientation)
     for name,(old,new) in pairs.items():
         count=300 if 'sweep' in name else 10000
@@ -257,6 +318,12 @@ def flight_worker():
     if os.environ.get('WT_BENCH_PREVIOUS_RUST') == '1':
         rust.aero_function=lambda library,reference:reference
         rust.matrix_quaternion_function=lambda library,reference:reference
+    if os.environ.get('WT_BENCH_PREVIOUS_VECTOR') == '1':
+        rust.vector_function=lambda library,reference,mode:reference
+        rust.integrate_function=lambda library,reference:reference
+    if os.environ.get('WT_BENCH_PREVIOUS_VECTOR') == '1':
+        import missile_copy
+        missile_copy.validate_flight_numbers=missile_copy.reference_validator
     import missile_worker
     request=dict(missile='us_aim9l_sidewinder',duration=10,
                  launcher=dict(position=[0,5000,0],velocity=[300,0,0],angles=[0,0,0]),
@@ -271,10 +338,11 @@ def flight_worker():
 
 def benchmark_flight():
     results=[]
-    for mode in ('python','fast-python','previous-rust','rust'):
+    for mode in ('python','fast-python','previous-rust','previous-vector-rust','rust'):
         env=dict(os.environ,WT_MISSILE_BACKEND='python' if mode=='python' else 'auto',
                  WT_NUMERIC_BACKEND='rust' if 'rust' in mode else 'python',
-                 WT_BENCH_PREVIOUS_RUST='1' if mode=='previous-rust' else '0')
+                 WT_BENCH_PREVIOUS_RUST='1' if mode=='previous-rust' else '0',
+                 WT_BENCH_PREVIOUS_VECTOR='1' if mode!='rust' else '0')
         run=subprocess.run([sys.executable,__file__,'--flight-worker'],env=env,
                            capture_output=True,text=True,check=True,timeout=120)
         result=json.loads(run.stdout);results.append(result)

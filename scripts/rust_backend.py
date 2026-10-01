@@ -68,6 +68,10 @@ def load(module_file):
             library.wt_orientation.restype = ctypes.c_uint32
             library.wt_matrix_quaternion.argtypes = [P, P]
             library.wt_matrix_quaternion.restype = ctypes.c_uint32
+            library.wt_vector.argtypes = [P, ctypes.c_uint32, P]
+            library.wt_vector.restype = ctypes.c_uint32
+            library.wt_integrate.argtypes = [P, P]
+            library.wt_integrate.restype = ctypes.c_uint32
             library.wt_aero.argtypes = [P, P, P, ctypes.c_size_t, P]
             library.wt_aero.restype = ctypes.c_uint32
             for name in ('wt_force', 'wt_moment'):
@@ -197,3 +201,32 @@ def matrix_quaternion_function(library, reference):
             return reference(forward,up,right)
         return list(result)
     return matrix_quaternion
+
+
+def vector_function(library, reference, mode):
+    def vector(q,value,*rest):
+        if len(q)!=4 or len(value)!=3 or (mode!=1 and rest) or (mode==1 and (len(rest)!=1 or len(rest[0])!=3)):
+            return reference(q,value,*rest)
+        packed=_array((*q,*value,*(rest[0] if mode==1 else (0.,0.,0.))))
+        result=(D*3)()
+        if packed is None or not library.wt_vector(packed,mode,result):
+            return reference(q,value,*rest)
+        return list(result)
+    return vector
+
+
+def integrate_function(library, reference):
+    def integrate(state,acceleration,angular_acceleration,dt,absolute_time,clock_rates=(0.,)*4):
+        args=(state,acceleration,angular_acceleration,dt,absolute_time,clock_rates)
+        try:
+            vectors=(state['position'],state['velocity'],state['omega'],state['quaternion'],state['clocks'],acceleration,angular_acceleration,clock_rates)
+            if tuple(map(len,vectors))!=(3,3,3,4,4,3,3,4):return reference(*args)
+            packed=_array((*vectors[0],*vectors[1],*vectors[2],*vectors[3],state['time'],*vectors[4],state['distance'],state['water_distance'],float(state['water']),*acceleration,*angular_acceleration,dt,absolute_time,*clock_rates))
+        except (KeyError,TypeError,ValueError):
+            return reference(*args)
+        result=(D*51)()
+        if packed is None or not library.wt_integrate(packed,result):return reference(*args)
+        r=list(result);rotation=r[27:];quaternion=rotation[20:24]
+        trig=[dict(sine=rotation[i],cosine=rotation[i+1],quadrant=int(rotation[i+2]),reduced=rotation[i+3]) for i in (0,4,8)]
+        return dict(state=dict(position=r[:3],velocity=r[3:6],omega=r[6:9],quaternion=quaternion,time=r[13],clocks=r[14:18],distance=r[18],water_distance=r[19],immersion=r[20]),displacement=r[21:24],increment=r[24:27],rotation=dict(trig=trig,delta=rotation[12:16],raw=rotation[16:20],quaternion=quaternion))
+    return integrate

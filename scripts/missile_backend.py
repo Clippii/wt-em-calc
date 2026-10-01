@@ -79,21 +79,29 @@ def activate():
     mode = _activate_cython()
     if mode == 'reference':
         return mode
-    from rust_backend import load, atmosphere_function, orientation_function, aero_function, matrix_quaternion_function
+    from rust_backend import load, atmosphere_function, orientation_function, aero_function, matrix_quaternion_function, vector_function, integrate_function
     library = load(__file__)
     replacements = {}
     # The Cython build already includes its own faster memo-aware copier.
     # Keep explicit python/reference selections available for comparison.
     if mode != 'compiled' and os.environ.get('WT_MISSILE_BACKEND','auto') != 'python':
         import copy
-        from missile_copy import deepcopy
+        from missile_copy import deepcopy, validate_flight_numbers
+        import state_binary32
         replacements[copy.deepcopy] = deepcopy
+        replacements[state_binary32.validate_flight_numbers] = validate_flight_numbers
     import kernels
     import body_integration
     import aero_vectors
     import control_frame
+    import motor_vector
+    import shared_seeker
     if library is not None:
-        replacements.update({control_frame.matrix_quaternion: matrix_quaternion_function(library, control_frame.matrix_quaternion),
+        replacements.update({body_integration.integrate: integrate_function(library, body_integration.integrate),
+                             motor_vector.rotate_thrust: vector_function(library, motor_vector.rotate_thrust, 0),
+                             shared_seeker.world_residual: vector_function(library, shared_seeker.world_residual, 1),
+                             shared_seeker.coast_body: vector_function(library, shared_seeker.coast_body, 2),
+                             control_frame.matrix_quaternion: matrix_quaternion_function(library, control_frame.matrix_quaternion),
                              aero_vectors.forces: aero_function(library, aero_vectors.forces),
                              kernels.atmosphere: atmosphere_function(library, kernels.atmosphere),
                              body_integration.orientation: orientation_function(library, body_integration.orientation)})
