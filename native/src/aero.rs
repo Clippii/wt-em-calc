@@ -601,3 +601,128 @@ pub unsafe extern "C" fn wt_integrate(input: *const f64, out: *mut f64) -> u32 {
     r[27..].copy_from_slice(&rotation);
     valid & success() & u32::from(r.iter().all(|v| v.is_finite()))
 }
+
+/// Acceleration controller after frame/schedule selection. See Python packing.
+#[no_mangle]
+pub unsafe extern "C" fn wt_controller(
+    input: *const f64,
+    table: *const f64,
+    rows: usize,
+    out: *mut f64,
+) -> u32 {
+    if input.is_null() || table.is_null() || out.is_null() || rows.checked_mul(3).is_none() {
+        return 0;
+    }
+    reset_overflow();
+    let p = std::slice::from_raw_parts(input, 50);
+    let table = std::slice::from_raw_parts(table, rows * 3);
+    let [x, y, z, w] = std::array::from_fn::<_, 4, _>(|i| f(p[i]));
+    let hx = mul(2., add(mul(z, x), mul(w, y)));
+    let t = mul(add(z, z), y);
+    let u = mul(mul(-2., x), w);
+    let common = add(mul(2., mul(w, w)), -1.);
+    let h = [hx, add(u, t), add(mul(2., mul(z, z)), common)];
+    let v = [
+        mul(2., sub(mul(x, y), mul(w, z))),
+        add(mul(2., mul(y, y)), common),
+        sub(t, u),
+    ];
+    let [rx, ry, rz] = [f(p[4]), f(p[5]), f(p[6])];
+    let mut wanted = [
+        add(add(mul(h[2], rz), mul(h[0], rx)), mul(h[1], ry)),
+        add(mul(v[2], rz), add(mul(v[1], ry), mul(v[0], rx))),
+    ];
+    let squared = add(mul(wanted[1], wanted[1]), mul(wanted[0], wanted[0]));
+    let [vx, vy, vz] = [f(p[10]), f(p[11]), f(p[12])];
+    let speed2 = add(mul(vz, vz), add(mul(vy, vy), mul(vx, vx)));
+    let height = f(p[13]);
+    let ceiling = f(p[19]);
+    let altitude = height.min(ceiling);
+    let density_poly = || {
+        let mut a = f(2.28719e-19);
+        for c in [-5.83556e-14, 3.53118e-9, -9.59387e-5, 1.] {
+            a = add(mul(a, altitude), c);
+        }
+        a
+    };
+    let sound = || {
+        let mut a = f(3.97306e-18);
+        for c in [-5.71104e-14, 2.18069e-10, -2.27712e-5, 1.] {
+            a = add(mul(a, altitude), c);
+        }
+        mul(f(mul(a, p[22]).sqrt()), 20.1)
+    };
+    let mut limit = p[15];
+    let mut aoa = 0.;
+    if p[49] != 0. && p[16] != 0. {
+        let mass = sub(p[23], p[28]);
+        let cy_mult = if table.is_empty() {
+            1.
+        } else {
+            table_value(table, div(speed2, sound()))
+        };
+        let mut factor = mul(p[20], 0.5);
+        for x in [speed2, p[19], density_poly(), cy_mult, p[24], p[26]] {
+            factor = mul(factor, x);
+        }
+        factor = div(factor, height.max(ceiling));
+        aoa = div(mul(add(factor, p[27]), p[17].min(p[25])), mass);
+        limit = limit.min(aoa);
+    }
+    let limit2 = mul(limit, limit);
+    if squared > limit2 {
+        let reduction = f(div(limit2, squared).sqrt());
+        wanted = wanted.map(|x| mul(x, reduction));
+    }
+    let mut scale2 = 1.;
+    if p[18] > 0. {
+        let rho = div(
+            mul(mul(ceiling, p[20]), density_poly()),
+            height.max(ceiling),
+        );
+        let denom = mul(mul(rho, rho), speed2);
+        scale2 = if f(denom).abs() > f(4e-19) {
+            div(mul(mul(p[21], p[21]), p[18]), denom)
+        } else {
+            0.
+        };
+    }
+    let scale = f(scale2.sqrt());
+    let [mx, my, mz] = [f(p[7]), f(p[8]), f(p[9])];
+    let actual = [
+        add(mul(h[1], my), add(mul(h[2], mz), mul(h[0], mx))),
+        add(mul(v[2], mz), add(mul(v[1], my), mul(v[0], mx))),
+    ];
+    let errors = [sub(wanted[0], actual[0]), sub(wanted[1], actual[1])];
+    let kp = mul(p[45], scale);
+    let ki = mul(p[46], scale);
+    let kd = mul(p[47], scale2);
+    let ilim = p[48];
+    let dt = p[14];
+    let r = std::slice::from_raw_parts_mut(out, 25);
+    for i in 0..2 {
+        let prev = &p[29 + i * 8..37 + i * 8];
+        let error = errors[i];
+        let integral = add(mul(mul(error, dt), ki), prev[3]).max(-ilim).min(ilim);
+        let derivative = add(
+            mul(sub(error, add(mul(dt, prev[7]), prev[6])), 48.),
+            prev[7],
+        );
+        let proportional = mul(kp, error);
+        let differential = mul(derivative, kd);
+        let value = if i == 0 {
+            add(add(differential, proportional), integral)
+        } else {
+            add(add(integral, proportional), differential)
+        };
+        r[i] = value.max(-1.).min(1.);
+        r[2 + i * 8..10 + i * 8]
+            .copy_from_slice(&[kp, ki, ilim, integral, kd, 48., error, derivative]);
+    }
+    r[18..20].copy_from_slice(&errors);
+    r[20..22].copy_from_slice(&wanted);
+    r[22] = aoa;
+    r[23] = scale;
+    r[24] = scale2;
+    success() & u32::from(r.iter().all(|x| x.is_finite()))
+}

@@ -19,6 +19,11 @@ from unittest.mock import patch
 import copy
 from missile_copy import deepcopy as fast_copy, validate_flight_numbers as fast_validate
 
+if '--em-cython-worker' in sys.argv:
+    os.environ['WT_NUMERIC_BACKEND']='python'
+    import em_backend
+    em_backend.activate()
+
 import component_assembly as assembly
 import polar_f32 as polar
 import rust_backend as rust
@@ -147,6 +152,46 @@ class Parity(unittest.TestCase):
             exact(result,body_integration.integrate(*args))
             self.assertIs(result['state']['quaternion'],result['rotation']['quaternion'])
 
+    def test_controller(self):
+        import acceleration_control
+        accelerated=rust.controller_function(self.library,lambda *a,**k:self.fail('Unexpected controller fallback'))
+        rng=random.Random(1127)
+        def exact(a,b,path=''):
+            if isinstance(a,dict):
+                self.assertEqual(a.keys(),b.keys())
+                for key in a:exact(a[key],b[key],path+'/'+key)
+            elif isinstance(a,list):
+                for x,y in zip(a,b):exact(x,y,path)
+            elif a is None:self.assertIsNone(b)
+            else:self.assertEqual(struct.pack('<d',a),struct.pack('<d',b),path)
+        for i in range(1000):
+            vector=lambda:[rng.uniform(-50.,50.) for _ in range(3)]
+            p=dict(velocity_frame=False,max_accel=30.,limit_aoa=i%2==0,aoa_max=.3,base_speed_squared=90000. if i%3 else 0.,schedule=[],coefficients=[[.01,.02,.03,1.]])
+            aero=dict(mass=100.,cy=2.,cy_limit=.5,side_area=.2,cy_table=[[0.,1.,1.],[1.,1.,.9],[4.,0.,.7]]) if i%4 else None
+            q=[rng.uniform(-1.,1.) for _ in range(4)]
+            state=[[rng.uniform(-1.,1.) for _ in range(8)] for _ in range(2)]
+            args=(p,aero,dict(thrust=100.,mass_lost=3.),state,vector(),vector(),q,vector(),rng.uniform(-10.,25000.),2.,1/48)
+            exact(accelerated(*args),acceleration_control.update(*args))
+
+    def test_shared_seeker(self):
+        import shared_seeker
+        fail=lambda *a,**k:self.fail('Unexpected seeker fallback')
+        update,slew=rust.seeker_functions(self.library,fail,fail)
+        rng=random.Random(1128)
+        for i in range(2000):
+            p=dict(angle_max=.8,lock_angle_max=.4,rate_max=2.,alpha=.85,beta=.2,gate_rate=.1 if i%2 else 100.)
+            vec=lambda:[rng.uniform(-1.,1.) for _ in range(3)]
+            q=[rng.uniform(-1.,1.) for _ in range(4)]
+            state=dict(angles=[rng.uniform(-.2,.2) for _ in range(2)],direction=vec(),angular_rate=vec())
+            coast=i%3==0;measurement=None if coast else vec();dt=rng.uniform(1e-5,.1)
+            args=(p,q,measurement,state,dt);kwargs=dict(coast=coast,authored_rate=i%2==0,lock_limit=i%4==0)
+            actual=update(*args,**kwargs);expected=shared_seeker.update(*args,**kwargs)
+            self.assertEqual(actual['accepted'],expected['accepted'])
+            for key in ('angles','direction','angular_rate'):
+                for a,b in zip(actual[key],expected[key]):self.exact(a,b)
+            args=(p,vec(),state['angles'],dt,i%2==0,i%3==0)
+            for a,b in zip(slew(*args),shared_seeker.slew(*args)):self.exact(a,b)
+
     def test_polars(self):
         rng = random.Random(932)
         boundaries = [-180.,-140.,-90.,-40.,-19.,-14.,-10.,0.,10.,16.,21.,40.,90.,140.,180.]
@@ -243,7 +288,9 @@ class Parity(unittest.TestCase):
                 env=dict(os.environ,WT_MISSILE_BACKEND='python' if mode=='python' else 'auto',
                          WT_NUMERIC_BACKEND='rust' if 'rust' in mode else 'python',
                  WT_BENCH_PREVIOUS_RUST='1' if mode=='previous-rust' else '0',
-                 WT_BENCH_PREVIOUS_VECTOR='1' if mode!='rust' else '0')
+                 WT_BENCH_PREVIOUS_VECTOR='1' if mode in ('python','fast-python','previous-rust','previous-vector-rust') else '0',
+                 WT_BENCH_PREVIOUS_CONTROLLER='0' if mode in ('rust','previous-seeker-rust') else '1',
+                 WT_BENCH_PREVIOUS_SEEKER='0' if mode=='rust' else '1')
                 run=subprocess.run([sys.executable,str(rust.ROOT/'scripts/missile_worker.py')],
                                    input=json.dumps(request),capture_output=True,text=True,env=env,timeout=60)
                 self.assertEqual(run.returncode,0,run.stdout+run.stderr)
@@ -324,6 +371,13 @@ def flight_worker():
     if os.environ.get('WT_BENCH_PREVIOUS_VECTOR') == '1':
         import missile_copy
         missile_copy.validate_flight_numbers=missile_copy.reference_validator
+    if os.environ.get('WT_BENCH_PREVIOUS_CONTROLLER') == '1':
+        rust.controller_function=lambda library,reference:reference
+    if os.environ.get('WT_BENCH_PREVIOUS_SEEKER') == '1':
+        rust.seeker_functions=lambda library,update,slew:(update,slew)
+    if os.environ.get('WT_BENCH_NO_CYTHON') == '1':
+        import missile_backend
+        missile_backend._activate_cython=lambda:'python'
     import missile_worker
     request=dict(missile='us_aim9l_sidewinder',duration=10,
                  launcher=dict(position=[0,5000,0],velocity=[300,0,0],angles=[0,0,0]),
@@ -333,16 +387,18 @@ def flight_worker():
         started=time.perf_counter();result=missile_worker.simulate(request)
         times.append(time.perf_counter()-started)
     digest=hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest()
-    print(json.dumps(dict(median_s=statistics.median(times),times_s=times,digest=digest)))
+    print(json.dumps(dict(median_s=statistics.median(times),times_s=times,digest=digest,backend=missile_worker.BACKEND)))
 
 
 def benchmark_flight():
     results=[]
-    for mode in ('python','fast-python','previous-rust','previous-vector-rust','rust'):
+    for mode in ('python','fast-python','previous-rust','previous-vector-rust','previous-controller-rust','previous-seeker-rust','rust'):
         env=dict(os.environ,WT_MISSILE_BACKEND='python' if mode=='python' else 'auto',
                  WT_NUMERIC_BACKEND='rust' if 'rust' in mode else 'python',
                  WT_BENCH_PREVIOUS_RUST='1' if mode=='previous-rust' else '0',
-                 WT_BENCH_PREVIOUS_VECTOR='1' if mode!='rust' else '0')
+                 WT_BENCH_PREVIOUS_VECTOR='1' if mode in ('python','fast-python','previous-rust','previous-vector-rust') else '0',
+                 WT_BENCH_PREVIOUS_CONTROLLER='0' if mode in ('rust','previous-seeker-rust') else '1',
+                 WT_BENCH_PREVIOUS_SEEKER='0' if mode=='rust' else '1')
         run=subprocess.run([sys.executable,__file__,'--flight-worker'],env=env,
                            capture_output=True,text=True,check=True,timeout=120)
         result=json.loads(run.stdout);results.append(result)
@@ -351,9 +407,49 @@ def benchmark_flight():
     print(f"Whole-flight speedup: {results[0]['median_s']/results[-1]['median_s']:.3f}x; output matches exactly")
 
 
+def benchmark_cython():
+    results={}
+    for mode in ('python','rust-only','cython','hybrid'):
+        env=dict(os.environ,WT_MISSILE_BACKEND='python' if mode=='python' else 'compiled' if mode in ('cython','hybrid') else 'auto',
+                 WT_NUMERIC_BACKEND='rust' if mode in ('rust-only','hybrid') else 'python',
+                 WT_BENCH_NO_CYTHON='1' if mode=='rust-only' else '0')
+        for key in ('WT_BENCH_PREVIOUS_RUST','WT_BENCH_PREVIOUS_VECTOR','WT_BENCH_PREVIOUS_CONTROLLER','WT_BENCH_PREVIOUS_SEEKER'):env[key]='0'
+        run=subprocess.run([sys.executable,__file__,'--flight-worker'],env=env,capture_output=True,text=True,check=True,timeout=120)
+        results[mode]=json.loads(run.stdout)
+        if mode in ('cython','hybrid') and results[mode]['backend']!='compiled':raise AssertionError('Cython not active')
+    if len({r['digest'] for r in results.values()})!=1:raise AssertionError('Cython flight mismatch')
+    print('CYTHON_FLIGHT_BENCHMARK '+json.dumps(results))
+    run=subprocess.run([sys.executable,__file__,'--em-cython-worker'],capture_output=True,text=True,check=True,timeout=300)
+    print(run.stdout.strip())
+
+
+def em_cython_worker():
+    os.environ['WT_NUMERIC_BACKEND']='rust'
+    library=rust.load(__file__)
+    forces={name:[1e4,-2e4,3e4] for name in (*assembly.NAMES,'parasite')}
+    positions={name:[1.,-2.,3.] for name in assembly.NAMES};cog=[0.,0.,0.]
+    packed_force=[x for name in (*assembly.NAMES,'parasite') for x in forces[name]]
+    packed_moment=[x for name in assembly.NAMES for x in forces[name]]+[x for name in assembly.NAMES for x in positions[name]]+cog
+    groups={
+        'polar':(lambda:REF_POLAR.calc_c(POLAR,37.,12.,.2,.9),lambda:polar.calc_c(POLAR,37.,12.,.2,.9),lambda:rust.polar(library,POLAR,37.,12.,.2,.9)),
+        'force':(lambda:REF_ASSEMBLY.assemble_force(forces),lambda:assembly.assemble_force(forces),lambda:rust.assembly(library,packed_force)),
+        'moment':(lambda:REF_ASSEMBLY.assemble_moment(forces,positions,cog),lambda:assembly.assemble_moment(forces,positions,cog),lambda:rust.assembly(library,packed_moment,moment=True))}
+    assert Path(assembly.__file__).suffix in ('.so','.pyd'),assembly.__file__
+    result={}
+    for name,functions in groups.items():
+        expected=functions[0]()
+        for fn in functions[1:]:
+            assert [struct.pack('<d',x) for x in fn()]==[struct.pack('<d',x) for x in expected]
+        result[name]=dict(zip(('python_us','cython_us','rust_us'),[min(timeit.repeat(fn,number=10000,repeat=3))*100 for fn in functions]))
+    print('CYTHON_EM_BENCHMARK '+json.dumps(result))
+
+
 if __name__ == '__main__':
+    if '--em-cython-worker' in sys.argv:
+        em_cython_worker();raise SystemExit(0)
     parser=argparse.ArgumentParser()
     parser.add_argument('--benchmark',action='store_true')
+    parser.add_argument('--benchmark-cython',action='store_true')
     parser.add_argument('--benchmark-flight',action='store_true')
     parser.add_argument('--flight-worker',action='store_true',help=argparse.SUPPRESS)
     args=parser.parse_args()
@@ -362,4 +458,5 @@ if __name__ == '__main__':
     result=unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(Parity))
     if not result.wasSuccessful():raise SystemExit(1)
     if args.benchmark:benchmark()
+    if args.benchmark_cython:benchmark_cython()
     if args.benchmark_flight:benchmark_flight()

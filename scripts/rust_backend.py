@@ -28,7 +28,7 @@ P = ctypes.POINTER(D)
 def signature():
     digest = hashlib.sha256()
     for file in (ROOT/'native/Cargo.toml', ROOT/'native/Cargo.lock',
-                 ROOT/'native/src/lib.rs', ROOT/'native/src/aero.rs', Path(__file__)):
+                 *sorted((ROOT/'native/src').rglob('*.rs')), Path(__file__)):
         digest.update(file.read_bytes())
     digest.update((sys.platform + platform.machine().lower()).encode())
     return digest.hexdigest()
@@ -72,6 +72,12 @@ def load(module_file):
             library.wt_vector.restype = ctypes.c_uint32
             library.wt_integrate.argtypes = [P, P]
             library.wt_integrate.restype = ctypes.c_uint32
+            library.wt_controller.argtypes = [P, P, ctypes.c_size_t, P]
+            library.wt_controller.restype = ctypes.c_uint32
+            library.wt_seeker.argtypes = [P, P]
+            library.wt_seeker.restype = ctypes.c_uint32
+            library.wt_slew.argtypes = [P, P]
+            library.wt_slew.restype = ctypes.c_uint32
             library.wt_aero.argtypes = [P, P, P, ctypes.c_size_t, P]
             library.wt_aero.restype = ctypes.c_uint32
             for name in ('wt_force', 'wt_moment'):
@@ -230,3 +236,49 @@ def integrate_function(library, reference):
         trig=[dict(sine=rotation[i],cosine=rotation[i+1],quadrant=int(rotation[i+2]),reduced=rotation[i+3]) for i in (0,4,8)]
         return dict(state=dict(position=r[:3],velocity=r[3:6],omega=r[6:9],quaternion=quaternion,time=r[13],clocks=r[14:18],distance=r[18],water_distance=r[19],immersion=r[20]),displacement=r[21:24],increment=r[24:27],rotation=dict(trig=trig,delta=rotation[12:16],raw=rotation[16:20],quaternion=quaternion))
     return integrate
+
+
+def controller_function(library, reference):
+    import acceleration_control
+    def update(p,aero,motor,state,request,measured,q,velocity,height,time,dt,*,environment=None,matrix_velocity_frame=True):
+        args=(p,aero,motor,state,request,measured,q,velocity,height,time,dt)
+        kwargs=dict(environment=environment,matrix_velocity_frame=matrix_velocity_frame)
+        try:
+            coefficients=acceleration_control.pid_coefficients(p,time)
+            if coefficients is None:return reference(*args,**kwargs)
+            frame=acceleration_control.frame(q,velocity,p['velocity_frame'],matrix=matrix_velocity_frame)
+            env=dict(height_scale=18300.,reference_density=1.225,sea_density=1.225,sea_temperature=288.16)|(environment or {})
+            if tuple(map(len,(frame,request,measured,velocity,state,*state,coefficients)))!=(4,3,3,3,2,8,8,4):return reference(*args,**kwargs)
+            rows=aero['cy_table'] if aero is not None and p['limit_aoa'] else []
+            if any(len(row)!=3 for row in rows):return reference(*args,**kwargs)
+            av=[aero[key] for key in ('mass','cy','cy_limit','side_area')] if aero is not None and p['limit_aoa'] else [0.]*4
+            motor=motor or dict(thrust=0.,mass_lost=0.)
+            packed=_array((*frame,*request,*measured,*velocity,height,dt,p['max_accel'],float(p['limit_aoa']),p['aoa_max'],p['base_speed_squared'],*(env[key] for key in ('height_scale','reference_density','sea_density','sea_temperature')),*av,motor['thrust'],motor['mass_lost'],*state[0],*state[1],*coefficients,float(aero is not None)))
+            table=_array(x for row in rows for x in row)
+        except (KeyError,TypeError,ValueError):return reference(*args,**kwargs)
+        result=(D*25)()
+        if packed is None or table is None or not library.wt_controller(packed,table,len(rows),result):return reference(*args,**kwargs)
+        r=list(result)
+        return dict(frame=frame,fins=r[:2],state=[r[2:10],r[10:18]],errors=r[18:20],limited_request=r[20:22],aoa_limit=r[22] if aero is not None and p['limit_aoa'] else None,scale=r[23],scale_squared=r[24],coefficients=coefficients)
+    return update
+
+
+def seeker_functions(library, reference_update, reference_slew):
+    fields=('angle_max','lock_angle_max','rate_max','alpha','beta','gate_rate')
+    def slew(p,desired,angles,dt,lock_limit,authored_rate):
+        if len(desired)!=3 or len(angles)!=2:return reference_slew(p,desired,angles,dt,lock_limit,authored_rate)
+        packed=_array((*(p[k] for k in fields),*desired,*angles,dt,float(lock_limit),float(authored_rate)))
+        r=(D*2)()
+        if packed is None or not library.wt_slew(packed,r):return reference_slew(p,desired,angles,dt,lock_limit,authored_rate)
+        return list(r)
+    def update(p,quaternion,measurement,state,dt,*,lock_limit=False,authored_rate=True,coast=False):
+        args=(p,quaternion,measurement,state,dt);kwargs=dict(lock_limit=lock_limit,authored_rate=authored_rate,coast=coast)
+        try:
+            desired=(0.,0.,0.) if coast else measurement
+            if tuple(map(len,(quaternion,desired,state['angles'],state['direction'],state['angular_rate'])))!=(4,3,2,3,3):return reference_update(*args,**kwargs)
+            packed=_array((*(p[k] for k in fields),*quaternion,*desired,*state['angles'],*state['direction'],*state['angular_rate'],dt,float(lock_limit),float(authored_rate),float(coast)))
+        except (KeyError,TypeError,ValueError):return reference_update(*args,**kwargs)
+        r=(D*9)()
+        if packed is None or not library.wt_seeker(packed,r):return reference_update(*args,**kwargs)
+        return dict(angles=list(r[:2]),direction=list(r[2:5]),angular_rate=list(r[5:8]),accepted=None if coast else bool(r[8]))
+    return update,slew
