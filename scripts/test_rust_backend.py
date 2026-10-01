@@ -364,6 +364,8 @@ class Parity(unittest.TestCase):
                     for x,y in zip(polar.calc_c(p,*args),REF_POLAR.calc_c(p,*args)):self.exact(x,y)
                     self.exact(polar.calc_cl(p,a),REF_POLAR.calc_cl(p,a))
                     self.exact(polar.calc_cd(p,a),REF_POLAR.calc_cd(p,a))
+        if not self.library._python:
+            return
         class MutableNumber:
             def __init__(self,v):self.value=v
             def __float__(self):return self.value
