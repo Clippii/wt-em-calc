@@ -7,7 +7,7 @@ use std::ffi::{c_char, c_void};
 use std::ptr;
 use std::sync::OnceLock;
 type O = *mut c_void;
-static API: OnceLock<[usize; 26]> = OnceLock::new();
+static API: OnceLock<[usize; 27]> = OnceLock::new();
 macro_rules! api {
     ($i:expr, $t:ty) => {
         std::mem::transmute::<usize, $t>(API.get().unwrap()[$i])
@@ -122,20 +122,18 @@ unsafe fn list(v: &[f64]) -> Option<Owned> {
 unsafe fn dict() -> Option<Owned> {
     owned(api!(13, unsafe extern "C" fn() -> O)())
 }
-unsafe fn put(d: &Owned, name: &'static [u8], v: Owned) -> Option<()> {
-    if api!(14, unsafe extern "C" fn(O, *const c_char, O) -> i32)(d.0, name.as_ptr().cast(), v.0)
-        < 0
-    {
+unsafe fn put(s: O, d: &Owned, name: &'static [u8], v: Owned) -> Option<()> {
+    if api!(23, unsafe extern "C" fn(O, O, O) -> i32)(d.0, key(s, output_key(name)), v.0) < 0 {
         None
     } else {
         Some(())
     }
 }
-unsafe fn put_float(d: &Owned, name: &'static [u8], v: f64) -> Option<()> {
-    put(d, name, float(v)?)
+unsafe fn put_float(s: O, d: &Owned, name: &'static [u8], v: f64) -> Option<()> {
+    put(s, d, name, float(v)?)
 }
-unsafe fn put_list(d: &Owned, name: &'static [u8], v: &[f64]) -> Option<()> {
-    put(d, name, list(v)?)
+unsafe fn put_list(s: O, d: &Owned, name: &'static [u8], v: &[f64]) -> Option<()> {
+    put(s, d, name, list(v)?)
 }
 unsafe fn finish(s: O, result: Option<Owned>) -> O {
     let error = api!(4, unsafe extern "C" fn() -> O)();
@@ -330,36 +328,37 @@ unsafe extern "C" fn atmosphere(s: O, a: *const O, n: isize) -> O {
                 return None;
             }
             let d = dict()?;
-            put_float(&d, b"density\0", out[0])?;
-            put_float(&d, b"sound_speed\0", out[1])?;
-            put_float(&d, b"pressure\0", out[2])?;
+            put_float(s, &d, b"density\0", out[0])?;
+            put_float(s, &d, b"sound_speed\0", out[1])?;
+            put_float(s, &d, b"pressure\0", out[2])?;
             Some(d)
         })(),
     )
 }
-unsafe fn rotation(out: &[f64]) -> Option<Owned> {
+unsafe fn rotation(s: O, out: &[f64]) -> Option<Owned> {
     let result = dict()?;
     let trig = owned(api!(11, unsafe extern "C" fn(isize) -> O)(3))?;
     for i in 0..3 {
         let d = dict()?;
-        put_float(&d, b"sine\0", out[i * 4])?;
-        put_float(&d, b"cosine\0", out[i * 4 + 1])?;
+        put_float(s, &d, b"sine\0", out[i * 4])?;
+        put_float(s, &d, b"cosine\0", out[i * 4 + 1])?;
         put(
+            s,
             &d,
             b"quadrant\0",
             owned(api!(15, unsafe extern "C" fn(i64) -> O)(
                 out[i * 4 + 2] as i64,
             ))?,
         )?;
-        put_float(&d, b"reduced\0", out[i * 4 + 3])?;
+        put_float(s, &d, b"reduced\0", out[i * 4 + 3])?;
         if api!(12, unsafe extern "C" fn(O, isize, O) -> i32)(trig.0, i as isize, d.take()) < 0 {
             return None;
         }
     }
-    put(&result, b"trig\0", trig)?;
-    put_list(&result, b"delta\0", &out[12..16])?;
-    put_list(&result, b"raw\0", &out[16..20])?;
-    put_list(&result, b"quaternion\0", &out[20..24])?;
+    put(s, &result, b"trig\0", trig)?;
+    put_list(s, &result, b"delta\0", &out[12..16])?;
+    put_list(s, &result, b"raw\0", &out[16..20])?;
+    put_list(s, &result, b"quaternion\0", &out[20..24])?;
     Some(result)
 }
 unsafe extern "C" fn orientation(s: O, a: *const O, n: isize) -> O {
@@ -376,7 +375,7 @@ unsafe extern "C" fn orientation(s: O, a: *const O, n: isize) -> O {
             {
                 None
             } else {
-                rotation(&out)
+                rotation(s, &out)
             }
         })(),
     )
@@ -447,33 +446,33 @@ unsafe extern "C" fn integrate(s: O, a: *const O, n: isize) -> O {
             }
             let result = dict()?;
             let state = dict()?;
-            let rot = rotation(&out[27..])?;
+            let rot = rotation(s, &out[27..])?;
             for (name, start, len) in [
                 (b"position\0".as_slice(), 0, 3),
                 (b"velocity\0", 3, 3),
                 (b"omega\0", 6, 3),
                 (b"clocks\0", 14, 4),
             ] {
-                put_list(&state, name, &out[start..start + len])?;
+                put_list(s, &state, name, &out[start..start + len])?;
             }
             let q = api!(5, unsafe extern "C" fn(O, O) -> O)(rot.0, key(s, 35));
             if q.is_null() {
                 return None;
             }
             inc(q);
-            put(&state, b"quaternion\0", Owned(q))?;
+            put(s, &state, b"quaternion\0", Owned(q))?;
             for (name, i) in [
                 (b"time\0".as_slice(), 13),
                 (b"distance\0", 18),
                 (b"water_distance\0", 19),
                 (b"immersion\0", 20),
             ] {
-                put_float(&state, name, out[i])?;
+                put_float(s, &state, name, out[i])?;
             }
-            put(&result, b"state\0", state)?;
-            put_list(&result, b"displacement\0", &out[21..24])?;
-            put_list(&result, b"increment\0", &out[24..27])?;
-            put(&result, b"rotation\0", rot)?;
+            put(s, &result, b"state\0", state)?;
+            put_list(s, &result, b"displacement\0", &out[21..24])?;
+            put_list(s, &result, b"increment\0", &out[24..27])?;
+            put(s, &result, b"rotation\0", rot)?;
             Some(result)
         })(),
     )
@@ -497,7 +496,7 @@ macro_rules! method {
         }
     };
 }
-static METHODS: [Method; 12] = [
+static METHODS: [Method; 13] = [
     method!("polar", polar),
     method!("assembly", packed_assembly),
     method!("force", force),
@@ -510,7 +509,200 @@ static METHODS: [Method; 12] = [
     method!("integrate", integrate),
     method!("deepcopy", deepcopy),
     method!("finite_graph", finite_graph),
+    method!("aero", aero),
 ];
+
+unsafe fn bool_obj(s: O, value: bool) -> Owned {
+    let o = key(s, if value { 60 } else { 61 });
+    inc(o);
+    Owned(o)
+}
+unsafe fn alias(o: &Owned) -> Owned {
+    inc(o.0);
+    Owned(o.0)
+}
+unsafe fn evaluated(s: O, r: &[f64]) -> Option<Owned> {
+    let d = dict()?;
+    for (name, start) in [(b"drag\0".as_slice(), 0), (b"lift\0", 3), (b"force\0", 6)] {
+        put_list(s, &d, name, &r[start..start + 3])?;
+    }
+    for (name, i) in [(b"cosine\0".as_slice(), 9), (b"cd\0", 10), (b"cy\0", 11)] {
+        put_float(s, &d, name, r[i])?;
+    }
+    Some(d)
+}
+unsafe fn matrix_list(r: &[f64]) -> Option<Owned> {
+    let out = owned(api!(11, unsafe extern "C" fn(isize) -> O)(3))?;
+    for i in 0..3 {
+        if api!(12, unsafe extern "C" fn(O, isize, O) -> i32)(
+            out.0,
+            i as isize,
+            list(&r[i * 3..i * 3 + 3])?.take(),
+        ) < 0
+        {
+            return None;
+        }
+    }
+    Some(out)
+}
+unsafe extern "C" fn aero(s: O, a: *const O, n: isize) -> O {
+    finish(
+        s,
+        (|| {
+            let a = args(a, n, 6)?;
+            dictionary(s, a[0])?;
+            dictionary(s, a[5])?;
+            let mut p = [0.; 22];
+            let mut v = [0.; 34];
+            for i in 0..12 {
+                p[i] = scalar(s, a[0], AERO_INPUT + i)?;
+            }
+            sequence(s, field(s, a[0], AERO_INPUT + 12)?, &mut p[12..16])?;
+            sequence(s, field(s, a[0], AERO_INPUT + 13)?, &mut p[16..19])?;
+            sequence(s, field(s, a[0], AERO_INPUT + 14)?, &mut p[19..22])?;
+            v[0] = number(a[1])?;
+            sequence(s, a[2], &mut v[1..4])?;
+            sequence(s, a[3], &mut v[4..8])?;
+            sequence(s, a[4], &mut v[8..11])?;
+            v[18] = 1. / 48.;
+            v[26] = 1.;
+            v[27] = 1.;
+            let mut supplied = 0;
+            for (k, start, len) in [
+                (16, 11, 3),
+                (17, 14, 2),
+                (21, 19, 3),
+                (22, 22, 3),
+                (27, 29, 3),
+            ] {
+                if let Some(value) = field(s, a[5], AERO_INPUT + k) {
+                    sequence(s, value, &mut v[start..start + len])?;
+                    supplied += 1;
+                }
+            }
+            for (k, i) in [
+                (18, 16),
+                (19, 17),
+                (20, 18),
+                (23, 25),
+                (24, 26),
+                (25, 27),
+                (26, 28),
+                (28, 32),
+                (29, 33),
+            ] {
+                if let Some(value) = field(s, a[5], AERO_INPUT + k) {
+                    v[i] = number(value)?;
+                    supplied += 1;
+                }
+            }
+            if supplied != api!(26, unsafe extern "C" fn(O) -> isize)(a[5]) {
+                return None;
+            }
+            let rows = field(s, a[0], AERO_INPUT + 15)?;
+            let typ = owned(api!(18, unsafe extern "C" fn(O) -> O)(rows))?;
+            let count;
+            let get: unsafe extern "C" fn(O, isize) -> O;
+            if typ.0 == key(s, 49) {
+                count = api!(6, unsafe extern "C" fn(O) -> isize)(rows);
+                get = api!(7, unsafe extern "C" fn(O, isize) -> O)
+            } else if typ.0 == key(s, 50) {
+                count = api!(9, unsafe extern "C" fn(O) -> isize)(rows);
+                get = api!(2, unsafe extern "C" fn(O, isize) -> O)
+            } else {
+                return None;
+            }
+            let mut table = Vec::new();
+            table.try_reserve((count as usize).checked_mul(3)?).ok()?;
+            for i in 0..count {
+                let mut row = [0.; 3];
+                sequence(s, get(rows, i), &mut row)?;
+                table.extend(row);
+            }
+            let mut r = [0.; 85];
+            if super::aero::wt_aero(
+                p.as_ptr(),
+                v.as_ptr(),
+                table.as_ptr(),
+                count as usize,
+                r.as_mut_ptr(),
+            ) == 0
+            {
+                return None;
+            }
+            let d = dict()?;
+            let flow = list(&r[24..27])?;
+            let baseline = evaluated(s, &r[27..39])?;
+            let active = r[39] != 0.;
+            put(s, &d, b"frame\0", matrix_list(&r[..9])?)?;
+            put(s, &d, b"axes\0", matrix_list(&r[9..18])?)?;
+            for (name, i) in [
+                (b"cm_speed\0".as_slice(), 18),
+                (b"mach\0", 19),
+                (b"pressure\0", 20),
+                (b"effective_mass\0", 76),
+            ] {
+                put_float(s, &d, name, r[i])?;
+            }
+            put_list(s, &d, b"local_flow\0", &r[21..24])?;
+            put(s, &d, b"flow\0", alias(&flow))?;
+            put(s, &d, b"baseline\0", alias(&baseline))?;
+            put(s, &d, b"fin_active\0", bool_obj(s, active))?;
+            put(s, &d, b"fin_limited\0", bool_obj(s, r[40] != 0.))?;
+            put_list(s, &d, b"deflection\0", &r[41..43])?;
+            put(
+                s,
+                &d,
+                b"fin_flow\0",
+                if active { list(&r[43..46])? } else { flow },
+            )?;
+            put(
+                s,
+                &d,
+                b"steering\0",
+                if active {
+                    evaluated(s, &r[46..58])?
+                } else {
+                    baseline
+                },
+            )?;
+            for (name, start) in [
+                (b"moment\0".as_slice(), 58),
+                (b"damping\0", 61),
+                (b"angular_acceleration_before_environment\0", 67),
+                (b"angular_acceleration\0", 70),
+                (b"acceleration\0", 73),
+                (b"perturbed_lever\0", 82),
+            ] {
+                put_list(s, &d, name, &r[start..start + 3])?;
+            }
+            let clipped = owned(api!(11, unsafe extern "C" fn(isize) -> O)(3))?;
+            for i in 0..3 {
+                if api!(12, unsafe extern "C" fn(O, isize, O) -> i32)(
+                    clipped.0,
+                    i as isize,
+                    bool_obj(s, r[64 + i] != 0.).take(),
+                ) < 0
+                {
+                    return None;
+                }
+            }
+            put(s, &d, b"damping_clipped\0", clipped)?;
+            let perturb = dict()?;
+            for (name, i) in [
+                (b"force_scale\0".as_slice(), 77),
+                (b"angle\0", 78),
+                (b"cosine\0", 79),
+                (b"sine\0", 80),
+                (b"lever_fraction\0", 81),
+            ] {
+                put_float(s, &perturb, name, r[i])?;
+            }
+            put(s, &d, b"perturbation\0", perturb)?;
+            Some(d)
+        })(),
+    )
+}
 
 unsafe fn all_finite(s: O, o: O, depth: usize, string_keys: bool) -> Option<bool> {
     if depth > 100 {
@@ -848,10 +1040,10 @@ pub unsafe extern "C" fn wt_python_scalar(index: u32, context: O) -> O {
 }
 #[no_mangle]
 pub unsafe extern "C" fn wt_python_init(addresses: *const usize, len: usize, context: O) -> O {
-    if len != 26 || context.is_null() {
+    if len != 27 || context.is_null() {
         return ptr::null_mut();
     }
-    let table: [usize; 26] = std::slice::from_raw_parts(addresses, 26)
+    let table: [usize; 27] = std::slice::from_raw_parts(addresses, 27)
         .try_into()
         .unwrap();
     if table.contains(&0) {
@@ -864,7 +1056,7 @@ pub unsafe extern "C" fn wt_python_init(addresses: *const usize, len: usize, con
     } else {
         let _ = API.set(table);
     }
-    if api!(9, unsafe extern "C" fn(O) -> isize)(context) != 62 {
+    if api!(9, unsafe extern "C" fn(O) -> isize)(context) != 144 {
         return ptr::null_mut();
     }
     let result = (|| {
@@ -882,4 +1074,68 @@ pub unsafe extern "C" fn wt_python_init(addresses: *const usize, len: usize, con
         Some(d)
     })();
     result.map_or(ptr::null_mut(), Owned::take)
+}
+
+#[inline]
+fn output_key(name: &[u8]) -> usize {
+    match name {
+        b"density\0" => 62,
+        b"sound_speed\0" => 63,
+        b"pressure\0" => 64,
+        b"sine\0" => 65,
+        b"cosine\0" => 66,
+        b"quadrant\0" => 67,
+        b"reduced\0" => 68,
+        b"trig\0" => 69,
+        b"delta\0" => 70,
+        b"raw\0" => 71,
+        b"quaternion\0" => 72,
+        b"position\0" => 73,
+        b"velocity\0" => 74,
+        b"omega\0" => 75,
+        b"clocks\0" => 76,
+        b"time\0" => 77,
+        b"distance\0" => 78,
+        b"water_distance\0" => 79,
+        b"immersion\0" => 80,
+        b"state\0" => 81,
+        b"displacement\0" => 82,
+        b"increment\0" => 83,
+        b"rotation\0" => 84,
+        b"drag\0" => 85,
+        b"lift\0" => 86,
+        b"force\0" => 87,
+        b"cd\0" => 88,
+        b"cy\0" => 89,
+        b"frame\0" => 90,
+        b"axes\0" => 91,
+        b"cm_speed\0" => 92,
+        b"mach\0" => 93,
+        b"local_flow\0" => 94,
+        b"flow\0" => 95,
+        b"baseline\0" => 96,
+        b"fin_active\0" => 97,
+        b"fin_limited\0" => 98,
+        b"deflection\0" => 99,
+        b"fin_flow\0" => 100,
+        b"steering\0" => 101,
+        b"moment\0" => 102,
+        b"damping\0" => 103,
+        b"damping_clipped\0" => 104,
+        b"angular_acceleration_before_environment\0" => 105,
+        b"angular_acceleration\0" => 106,
+        b"acceleration\0" => 107,
+        b"effective_mass\0" => 108,
+        b"perturbation\0" => 109,
+        b"force_scale\0" => 110,
+        b"angle\0" => 111,
+        b"lever_fraction\0" => 112,
+        b"perturbed_lever\0" => 113,
+        _ => unreachable!("Unknown native output field"),
+    }
+}
+const AERO_INPUT: usize = 114;
+#[no_mangle]
+pub extern "C" fn wt_python_field_names() -> *const c_char {
+    b"density sound_speed pressure sine cosine quadrant reduced trig delta raw quaternion position velocity omega clocks time distance water_distance immersion state displacement increment rotation drag lift force cd cy frame axes cm_speed mach local_flow flow baseline fin_active fin_limited deflection fin_flow steering moment damping damping_clipped angular_acceleration_before_environment angular_acceleration acceleration effective_mass perturbation force_scale angle lever_fraction perturbed_lever stabilizer_arm cx cx_aoa cy cy_limit front_area side_area fins_hor fins_ver fin_pressure_limit damping_geometry mass axis_quaternion inertia angular_damping cy_table wind fins additional_cx additional_lever dt torque force mass_lost gravity use_cxi mass_term angular_environment perturbation body_random\0".as_ptr().cast()
 }

@@ -111,13 +111,16 @@ def _python_interface(library):
              'PyList_New', 'PyList_SetItem', 'PyDict_New', 'PyDict_SetItemString',
              'PyLong_FromLongLong', 'PyCFunction_NewEx', 'PyErr_ExceptionMatches', 'PyObject_Type',
              'PyTuple_New','PyTuple_SetItem','PyObject_CallObject',
-             'PyDict_Next','PyDict_SetItem','PyList_Append','PyLong_FromVoidPtr')
+             'PyDict_Next','PyDict_SetItem','PyList_Append','PyLong_FromVoidPtr','PyDict_Size')
     addresses = (ctypes.c_size_t * len(names))(*(ctypes.cast(getattr(ctypes.pythonapi,name),ctypes.c_void_p).value for name in names))
     keys = (*FIELDS, 'left_wing','right_wing','left_hstab','right_hstab','vstab','fuselage','chute','parasite',
             'position','velocity','omega','quaternion','time','clocks','distance','water_distance','water')
     from copy import deepcopy
+    library.wt_python_field_names.argtypes=[]
+    library.wt_python_field_names.restype=ctypes.c_char_p
+    field_names=library.wt_python_field_names().decode('ascii').split()
     context = (*map(sys.intern,keys), *([None]*6), None, MemoryError, list, tuple, dict, library,
-               float,int,str,bool,bytes,type(None),deepcopy,True,False)
+               float,int,str,bool,bytes,type(None),deepcopy,True,False,*map(sys.intern,field_names))
     # PYFUNCTYPE retains the GIL. ctypes consumes the returned new reference
     # when converting a py_object function result (do not decrement it again).
     initialize = ctypes.PYFUNCTYPE(ctypes.py_object,ctypes.POINTER(ctypes.c_size_t),ctypes.c_size_t,ctypes.py_object)(('wt_python_init',library))
@@ -251,6 +254,12 @@ def orientation_function(library, reference):
     return orientation
 
 def aero_function(library, reference):
+    if library._python:
+        native=library._python['aero']
+        def forces(props,height,velocity,q,omega,**kwargs):
+            result=native(props,height,velocity,q,omega,kwargs)
+            return reference(props,height,velocity,q,omega,**kwargs) if result is None else result
+        return forces
     fields=('stabilizer_arm','cx','cx_aoa','cy','cy_limit','front_area','side_area','fins_hor','fins_ver','fin_pressure_limit','damping_geometry','mass')
     def forces(props,height,velocity,q,omega,**kwargs):
         defaults=dict(wind=(0.,0.,0.),fins=(0.,0.),additional_cx=0.,additional_lever=0.,dt=1/48,torque=(0.,0.,0.),force=(0.,0.,0.),mass_lost=0.,gravity=True,use_cxi=True,mass_term=0.,angular_environment=(0.,0.,0.),perturbation=0.,body_random=0.)
