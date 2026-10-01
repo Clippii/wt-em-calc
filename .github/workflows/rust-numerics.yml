@@ -17,6 +17,11 @@ jobs:
         env:
           WT_NUMERIC_BACKEND: rust
         run: python scripts/test_rust_backend.py
+      - name: Check portable ctypes fallback
+        env:
+          WT_NUMERIC_BACKEND: rust
+          WT_RUST_INTERFACE: ctypes
+        run: python scripts/test_rust_backend.py
 
   cython-benchmark:
     runs-on: ubuntu-latest

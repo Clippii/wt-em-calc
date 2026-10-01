@@ -12,8 +12,12 @@ NAMES=('left_wing','right_wing','left_hstab','right_hstab','vstab','fuselage','c
 
 def assemble_force(forces):
     if _rust is not None:
-        result = _rust_assembly(_rust,(x for n in (*NAMES,'parasite') for x in forces[n]))
-        if result is not None:return result
+        if _rust._python:
+            result = _rust._python['force'](forces)
+            if result is not None:return result
+        else:
+            result = _rust_assembly(_rust,(x for n in (*NAMES,'parasite') for x in forces[n]))
+            if result is not None:return result
     l,r,h,j,v,b,c,p=([f32(x) for x in forces[n]] for n in (*NAMES,'parasite'))
     x=add(add(add(v[0],add(j[0],add(h[0],add(add(l[0],c[0]),r[0])))),b[0]),p[0])
     y=add(add(add(add(add(add(l[1],c[1]),r[1]),j[1]),add(v[1],h[1])),p[1]),b[1])
@@ -22,10 +26,13 @@ def assemble_force(forces):
 
 def assemble_moment(forces,positions,cog):
     if _rust is not None:
-        values = [x for n in NAMES for x in forces[n]]
-        values.extend(positions[n][i] for n in NAMES for i in range(3))
-        values.extend(cog)
-        result = _rust_assembly(_rust,values,moment=True)
+        if _rust._python:
+            result = _rust._python['moment'](forces,positions,cog)
+        else:
+            values = [x for n in NAMES for x in forces[n]]
+            values.extend(positions[n][i] for n in NAMES for i in range(3))
+            values.extend(cog)
+            result = _rust_assembly(_rust,values,moment=True)
         if result is not None:return result
     f={n:[f32(x) for x in forces[n]] for n in NAMES}
     r={n:[sub(f32(positions[n][i]),f32(cog[i])) for i in range(3)] for n in NAMES}

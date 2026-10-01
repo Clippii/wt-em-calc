@@ -111,7 +111,7 @@ def activate():
                              aero_vectors.forces: aero_function(library, aero_vectors.forces),
                              kernels.atmosphere: atmosphere_function(library, kernels.atmosphere),
                              body_integration.orientation: orientation_function(library, body_integration.orientation)})
-        if mode != 'compiled' or RUST_VECTORS_WITH_CYTHON:
+        if mode != 'compiled' or library._python or RUST_VECTORS_WITH_CYTHON:
             replacements.update({motor_vector.rotate_thrust: vector_function(library, motor_vector.rotate_thrust, 0),
                                  shared_seeker.world_residual: vector_function(library, shared_seeker.world_residual, 1),
                                  shared_seeker.coast_body: vector_function(library, shared_seeker.coast_body, 2)})

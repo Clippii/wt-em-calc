@@ -39,7 +39,7 @@ def load(module_file):
     mode = os.environ.get('WT_NUMERIC_BACKEND', 'auto')
     if mode not in ('auto', 'rust', 'python'):
         raise ValueError('Unknown WT_NUMERIC_BACKEND: ' + mode)
-    if mode == 'python' or (mode == 'auto' and not module_file.endswith('.py')):
+    if mode == 'python':
         return None
     if not _attempted:
         _attempted = True
@@ -84,13 +84,40 @@ def load(module_file):
                 function = getattr(library, name)
                 function.argtypes = [P, P]
                 function.restype = ctypes.c_uint32
+            library._python = _python_interface(library)
             _library = library
         except (OSError, ValueError, KeyError, AttributeError) as error:
             if mode == 'rust':
                 raise RuntimeError('Rust kernels unavailable; run scripts/build_rust_backend.py') from error
     if mode == 'rust' and _library is None:
         raise RuntimeError('Rust kernels unavailable; run scripts/build_rust_backend.py')
+    if mode == 'auto' and not module_file.endswith('.py') and (_library is None or not _library._python):
+        return None
     return _library
+
+
+def _python_interface(library):
+    """Register GIL-held native builtins using the public CPython Stable ABI.
+
+    No Python object layouts or version-specific symbols are used. Other
+    interpreters and free-threaded builds keep the portable ctypes interface.
+    The builtins own their key tuple; the library remains owned by this module.
+    """
+    if os.environ.get('WT_RUST_INTERFACE') == 'ctypes' or sys.implementation.name != 'cpython' or (hasattr(sys, '_is_gil_enabled') and not sys._is_gil_enabled()):
+        return {}
+    names = ('Py_IncRef', 'Py_DecRef', 'PyTuple_GetItem', 'PyFloat_AsDouble',
+             'PyErr_Occurred', 'PyDict_GetItemWithError', 'PyList_Size',
+             'PyList_GetItem', 'PyErr_Clear', 'PyTuple_Size', 'PyFloat_FromDouble',
+             'PyList_New', 'PyList_SetItem', 'PyDict_New', 'PyDict_SetItemString',
+             'PyLong_FromLongLong', 'PyCFunction_NewEx', 'PyErr_ExceptionMatches', 'PyObject_Type')
+    addresses = (ctypes.c_size_t * len(names))(*(ctypes.cast(getattr(ctypes.pythonapi,name),ctypes.c_void_p).value for name in names))
+    keys = (*FIELDS, 'left_wing','right_wing','left_hstab','right_hstab','vstab','fuselage','chute','parasite',
+            'position','velocity','omega','quaternion','time','clocks','distance','water_distance','water')
+    context = (*map(sys.intern,keys), *([None]*6), None, MemoryError, list, tuple, dict, library)
+    # PYFUNCTYPE retains the GIL. ctypes consumes the returned new reference
+    # when converting a py_object function result (do not decrement it again).
+    initialize = ctypes.PYFUNCTYPE(ctypes.py_object,ctypes.POINTER(ctypes.c_size_t),ctypes.c_size_t,ctypes.py_object)(('wt_python_init',library))
+    return initialize(addresses,len(names),context)
 
 
 def _array(values):
@@ -102,6 +129,8 @@ def _array(values):
 
 
 def polar(library, p, a, angle=0., cl_add=0., cd_coeff=1., mode=2):
+    if library._python:
+        return library._python['polar'](p,a,angle,cl_add,cd_coeff,mode)
     try:
         packed = _array(p[key] for key in FIELDS)
     except KeyError:
@@ -115,6 +144,8 @@ def polar(library, p, a, angle=0., cl_add=0., cd_coeff=1., mode=2):
 
 
 def assembly(library, values, moment=False):
+    if library._python:
+        return library._python['assembly'](tuple(values),moment)
     packed = _array(values)
     if packed is None:
         return None
@@ -133,6 +164,10 @@ def polar_batch(p, rows):
     rows = [tuple(row) for row in rows]
     if any(len(row) != 4 for row in rows):
         raise ValueError('Each polar row must contain four values')
+    if library is not None and library._python:
+        result = library._python['batch'](p,rows)
+        if result is not None:
+            return result
     packed = _array(p[key] for key in FIELDS)
     inputs = _array(v for row in rows for v in row)
     if library is None or packed is None or inputs is None:
@@ -147,6 +182,12 @@ def polar_batch(p, rows):
 
 
 def atmosphere_function(library, reference):
+    if library._python:
+        native=library._python['atmosphere']
+        def atmosphere(height):
+            result=native(height)
+            return reference(height) if result is None else result
+        return atmosphere
     def atmosphere(height):
         if not math.isfinite(height) or abs(height)>3.4028234663852886e38:
             return reference(height)
@@ -159,6 +200,12 @@ def atmosphere_function(library, reference):
 
 
 def orientation_function(library, reference):
+    if library._python:
+        native=library._python['orientation']
+        def orientation(quaternion,increment):
+            result=native(quaternion,increment)
+            return reference(quaternion,increment) if result is None else result
+        return orientation
     def orientation(quaternion, increment):
         values = (*quaternion, *increment)
         packed = _array(values)
@@ -198,6 +245,12 @@ def aero_function(library, reference):
 
 
 def matrix_quaternion_function(library, reference):
+    if library._python:
+        native=library._python['matrix']
+        def matrix_quaternion(forward,up,right):
+            result=native(forward,up,right)
+            return reference(forward,up,right) if result is None else result
+        return matrix_quaternion
     def matrix_quaternion(forward,up,right):
         if any(len(row)!=3 for row in (forward,up,right)):
             return reference(forward,up,right)
@@ -210,6 +263,14 @@ def matrix_quaternion_function(library, reference):
 
 
 def vector_function(library, reference, mode):
+    if library._python:
+        native=library._python['vector']
+        def vector(q,value,*rest):
+            if (mode!=1 and rest) or (mode==1 and len(rest)!=1):
+                return reference(q,value,*rest)
+            result=native(q,value,rest[0] if mode==1 else None,mode)
+            return reference(q,value,*rest) if result is None else result
+        return vector
     def vector(q,value,*rest):
         if len(q)!=4 or len(value)!=3 or (mode!=1 and rest) or (mode==1 and (len(rest)!=1 or len(rest[0])!=3)):
             return reference(q,value,*rest)
@@ -222,6 +283,12 @@ def vector_function(library, reference, mode):
 
 
 def integrate_function(library, reference):
+    if library._python:
+        native=library._python['integrate']
+        def integrate(state,acceleration,angular_acceleration,dt,absolute_time,clock_rates=(0.,)*4):
+            result=native(state,acceleration,angular_acceleration,dt,absolute_time,clock_rates)
+            return reference(state,acceleration,angular_acceleration,dt,absolute_time,clock_rates) if result is None else result
+        return integrate
     def integrate(state,acceleration,angular_acceleration,dt,absolute_time,clock_rates=(0.,)*4):
         args=(state,acceleration,angular_acceleration,dt,absolute_time,clock_rates)
         try:

@@ -225,6 +225,39 @@ class Parity(unittest.TestCase):
         self.assertEqual(rust.polar_batch(POLAR,[]),[])
         with self.assertRaises(ValueError):rust.polar_batch(POLAR,[(1,2)])
 
+    def test_direct_interface_ownership_and_fallback(self):
+        import gc
+        import types
+        if not self.library._python:
+            self.skipTest('Portable ctypes interface selected')
+        native=self.library._python
+        self.assertIsInstance(native['polar'],types.BuiltinFunctionType)
+        q=[.1,.2,.3,.9];v=[10.,20.,30.]
+        p=dict(POLAR)
+        counts=[sys.getrefcount(x) for x in (q,v,p)]
+        for _ in range(10000):
+            native['vector'](q,v,None,0)
+            native['polar'](p,37.,12.,.2,.9,2)
+        gc.collect()
+        self.assertEqual(counts,[sys.getrefcount(x) for x in (q,v,p)])
+        self.assertIsNone(native['vector'](q,[],None,0))
+        self.assertIsNone(native['vector'](q,[object(),1.,2.],None,0))
+        # Unsupported conversion must not leave an exception pending or accept
+        # the PyFloat_AsDouble error sentinel as a legitimate -1 input.
+        self.assertIsNone(native['atmosphere'](object()))
+        self.assertIsNotNone(native['atmosphere'](-1.))
+        class Mapping(dict):
+            def __getitem__(self,key):return super().__getitem__(key)+.25
+        self.assertIsNone(native['polar'](Mapping(p),37.,12.,.2,.9,2))
+        class Vector(list):
+            def __iter__(self):return iter([0.,0.,0.])
+        self.assertIsNone(native['vector'](q,Vector(v),None,0))
+        with patch.object(self.library,'_python',{}):
+            portable=rust.polar(self.library,p,37.,12.,.2,.9)
+        self.assertEqual(native['polar'](p,37.,12.,.2,.9,2),portable)
+        p['cl0']+=.25
+        self.assertNotEqual(native['polar'](p,37.,12.,.2,.9,2),portable)
+
     def test_mutated_polar(self):
         p=dict(POLAR)
         polar.calc_c(p,12.,4.)
@@ -481,6 +514,7 @@ def missile_kernel_worker():
 def em_cython_worker():
     os.environ['WT_NUMERIC_BACKEND']='rust'
     library=rust.load(__file__)
+    native_assembly=reference('component_assembly');native_assembly._rust=library
     forces={name:[1e4,-2e4,3e4] for name in (*assembly.NAMES,'parasite')}
     positions={name:[1.,-2.,3.] for name in assembly.NAMES};cog=[0.,0.,0.]
     packed_force=[x for name in (*assembly.NAMES,'parasite') for x in forces[name]]
@@ -489,8 +523,8 @@ def em_cython_worker():
     groups={
         'sweep':(lambda:[REF_POLAR.calc_c(POLAR,*row) for row in rows],lambda:[polar.calc_c(POLAR,*row) for row in rows],lambda:rust.polar_batch(POLAR,rows)),
         'polar':(lambda:REF_POLAR.calc_c(POLAR,37.,12.,.2,.9),lambda:polar.calc_c(POLAR,37.,12.,.2,.9),lambda:rust.polar(library,POLAR,37.,12.,.2,.9)),
-        'force':(lambda:REF_ASSEMBLY.assemble_force(forces),lambda:assembly.assemble_force(forces),lambda:rust.assembly(library,(x for name in (*assembly.NAMES,'parasite') for x in forces[name]))),
-        'moment':(lambda:REF_ASSEMBLY.assemble_moment(forces,positions,cog),lambda:assembly.assemble_moment(forces,positions,cog),lambda:rust.assembly(library,[x for name in assembly.NAMES for x in forces[name]]+[x for name in assembly.NAMES for x in positions[name]]+cog,moment=True))}
+        'force':(lambda:REF_ASSEMBLY.assemble_force(forces),lambda:assembly.assemble_force(forces),lambda:native_assembly.assemble_force(forces)),
+        'moment':(lambda:REF_ASSEMBLY.assemble_moment(forces,positions,cog),lambda:assembly.assemble_moment(forces,positions,cog),lambda:native_assembly.assemble_moment(forces,positions,cog))}
     assert Path(assembly.__file__).suffix in ('.so','.pyd'),assembly.__file__
     result={}
     for name,functions in groups.items():
