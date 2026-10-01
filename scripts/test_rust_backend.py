@@ -372,6 +372,46 @@ class Parity(unittest.TestCase):
         class ListSubclass(list):pass
         self.assertIsInstance(fast_copy(ListSubclass([child])),ListSubclass)
 
+    def test_native_snapshot_copy(self):
+        native=rust.copy_function(self.library,copy.deepcopy)
+        child=[1.,-0.,float('inf')]
+        source={'a':child,'b':child}
+        source['self']=source
+        memo={}
+        result=native(source,memo)
+        self.assertIs(result['self'],result)
+        self.assertIs(result['a'],result['b'])
+        self.assertIsNot(result['a'],child)
+        self.assertIs(memo[id(source)],result)
+        self.assertIs(memo[id(child)],result['a'])
+        self.assertIn(source,memo[id(memo)])
+        result['a'][0]=9.
+        self.assertEqual(child[0],1.)
+        class Custom:
+            def __deepcopy__(self,memo):return 'custom-copy'
+        class ListSubclass(list):pass
+        self.assertEqual(native({'x':Custom()}),copy.deepcopy({'x':Custom()}))
+        self.assertIsInstance(native(ListSubclass([child])),ListSubclass)
+        source={'a':child,'tuple':(child,)}
+        result=native(source)
+        self.assertIs(result['a'],result['tuple'][0])
+        counts=[sys.getrefcount(x) for x in (source,child)]
+        for _ in range(1000):native(source)
+        self.assertEqual(counts,[sys.getrefcount(x) for x in (source,child)])
+
+    def test_native_finite_graph(self):
+        import flight_session,state_binary32
+        strict=rust.finite_function(self.library,flight_session.finite,True)
+        validator=rust.finite_function(self.library,state_binary32.validate_flight_numbers)
+        strict({'a':[1.,-0.,(2.,3.)]})
+        with self.assertRaisesRegex(ValueError,r'root.a\[0\] must be finite'):
+            strict({'a':[float('inf')]},'root')
+        with self.assertRaises(TypeError):strict({1:0.})
+        state={'guidance':{'orientation':{'pid':[[float('inf')]*8,[float('nan')]*8]}}}
+        validator(state)
+        state['body']={'speed':float('inf')}
+        with self.assertRaisesRegex(ValueError,r'state.body.speed must be finite'):validator(state)
+
 
 def benchmark():
     forces={n:[1e4,-2e4,3e4] for n in (*assembly.NAMES,'parasite')}

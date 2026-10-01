@@ -110,11 +110,14 @@ def _python_interface(library):
              'PyList_GetItem', 'PyErr_Clear', 'PyTuple_Size', 'PyFloat_FromDouble',
              'PyList_New', 'PyList_SetItem', 'PyDict_New', 'PyDict_SetItemString',
              'PyLong_FromLongLong', 'PyCFunction_NewEx', 'PyErr_ExceptionMatches', 'PyObject_Type',
-             'PyTuple_New','PyTuple_SetItem','PyObject_CallObject')
+             'PyTuple_New','PyTuple_SetItem','PyObject_CallObject',
+             'PyDict_Next','PyDict_SetItem','PyList_Append','PyLong_FromVoidPtr')
     addresses = (ctypes.c_size_t * len(names))(*(ctypes.cast(getattr(ctypes.pythonapi,name),ctypes.c_void_p).value for name in names))
     keys = (*FIELDS, 'left_wing','right_wing','left_hstab','right_hstab','vstab','fuselage','chute','parasite',
             'position','velocity','omega','quaternion','time','clocks','distance','water_distance','water')
-    context = (*map(sys.intern,keys), *([None]*6), None, MemoryError, list, tuple, dict, library)
+    from copy import deepcopy
+    context = (*map(sys.intern,keys), *([None]*6), None, MemoryError, list, tuple, dict, library,
+               float,int,str,bool,bytes,type(None),deepcopy,True,False)
     # PYFUNCTYPE retains the GIL. ctypes consumes the returned new reference
     # when converting a py_object function result (do not decrement it again).
     initialize = ctypes.PYFUNCTYPE(ctypes.py_object,ctypes.POINTER(ctypes.c_size_t),ctypes.c_size_t,ctypes.py_object)(('wt_python_init',library))
@@ -127,6 +130,26 @@ def scalar_functions(library, references):
         return references
     bind=ctypes.PYFUNCTYPE(ctypes.py_object,ctypes.c_uint32,ctypes.py_object)(('wt_python_scalar',library))
     return tuple(bind(i,(reference,library)) for i,reference in enumerate(references))
+
+
+def copy_function(library, reference):
+    if not library._python:
+        return reference
+    native=library._python['deepcopy']
+    def deepcopy(value,memo=None):
+        return native(value,memo)
+    return deepcopy
+
+
+def finite_function(library, reference, string_keys=False):
+    if not library._python:
+        return reference
+    native=library._python['finite_graph']
+    def finite(value,*args,**kwargs):
+        if native(value,string_keys):
+            return None
+        return reference(value,*args,**kwargs)
+    return finite
 
 
 def _array(values):

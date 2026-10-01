@@ -7,7 +7,7 @@ use std::ffi::{c_char, c_void};
 use std::ptr;
 use std::sync::OnceLock;
 type O = *mut c_void;
-static API: OnceLock<[usize; 22]> = OnceLock::new();
+static API: OnceLock<[usize; 26]> = OnceLock::new();
 macro_rules! api {
     ($i:expr, $t:ty) => {
         std::mem::transmute::<usize, $t>(API.get().unwrap()[$i])
@@ -489,7 +489,7 @@ macro_rules! method {
         }
     };
 }
-static METHODS: [Method; 10] = [
+static METHODS: [Method; 12] = [
     method!("polar", polar),
     method!("assembly", packed_assembly),
     method!("force", force),
@@ -500,7 +500,221 @@ static METHODS: [Method; 10] = [
     method!("vector", vector),
     method!("matrix", matrix),
     method!("integrate", integrate),
+    method!("deepcopy", deepcopy),
+    method!("finite_graph", finite_graph),
 ];
+
+unsafe fn all_finite(s: O, o: O, depth: usize, string_keys: bool) -> Option<bool> {
+    if depth > 100 {
+        return Some(false);
+    }
+    let typ = owned(api!(18, unsafe extern "C" fn(O) -> O)(o))?;
+    if typ.0 == key(s, 53) {
+        return Some(api!(3, unsafe extern "C" fn(O) -> f64)(o).is_finite());
+    }
+    if atomic(s, typ.0) {
+        return Some(true);
+    }
+    if typ.0 == key(s, 51) {
+        let mut pos = 0;
+        let mut k = ptr::null_mut();
+        let mut v = ptr::null_mut();
+        while api!(
+            22,
+            unsafe extern "C" fn(O, *mut isize, *mut O, *mut O) -> i32
+        )(o, &mut pos, &mut k, &mut v)
+            != 0
+        {
+            if string_keys && owned(api!(18, unsafe extern "C" fn(O) -> O)(k))?.0 != key(s, 55) {
+                return Some(false);
+            }
+            if !all_finite(s, v, depth + 1, string_keys)? {
+                return Some(false);
+            }
+        }
+        return Some(true);
+    }
+    let n;
+    let get: unsafe extern "C" fn(O, isize) -> O;
+    if typ.0 == key(s, 49) {
+        n = api!(6, unsafe extern "C" fn(O) -> isize)(o);
+        get = api!(7, unsafe extern "C" fn(O, isize) -> O)
+    } else if typ.0 == key(s, 50) {
+        n = api!(9, unsafe extern "C" fn(O) -> isize)(o);
+        get = api!(2, unsafe extern "C" fn(O, isize) -> O)
+    } else {
+        return Some(false);
+    }
+    for i in 0..n {
+        if !all_finite(s, get(o, i), depth + 1, string_keys)? {
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+unsafe extern "C" fn finite_graph(s: O, a: *const O, n: isize) -> O {
+    finish(
+        s,
+        (|| {
+            let a = args(a, n, 2)?;
+            let value = all_finite(s, a[0], 0, number(a[1])? != 0.)?;
+            let result = key(s, if value { 60 } else { 61 });
+            inc(result);
+            Some(Owned(result))
+        })(),
+    )
+}
+
+unsafe fn atomic(s: O, typ: O) -> bool {
+    (53..59).any(|i| typ == key(s, i))
+}
+unsafe fn plain_graph(
+    s: O,
+    o: O,
+    seen: &mut std::collections::HashSet<usize>,
+    depth: usize,
+) -> Option<bool> {
+    if depth > 100 {
+        return Some(false);
+    }
+    let typ = owned(api!(18, unsafe extern "C" fn(O) -> O)(o))?;
+    if atomic(s, typ.0) {
+        return Some(true);
+    }
+    if typ.0 != key(s, 49) && typ.0 != key(s, 51) {
+        return Some(false);
+    }
+    if !seen.insert(o as usize) {
+        return Some(true);
+    }
+    if typ.0 == key(s, 49) {
+        let n = api!(6, unsafe extern "C" fn(O) -> isize)(o);
+        for i in 0..n {
+            if !plain_graph(
+                s,
+                api!(7, unsafe extern "C" fn(O, isize) -> O)(o, i),
+                seen,
+                depth + 1,
+            )? {
+                return Some(false);
+            }
+        }
+    } else {
+        let mut pos = 0;
+        let mut k = ptr::null_mut();
+        let mut v = ptr::null_mut();
+        while api!(
+            22,
+            unsafe extern "C" fn(O, *mut isize, *mut O, *mut O) -> i32
+        )(o, &mut pos, &mut k, &mut v)
+            != 0
+        {
+            if !plain_graph(s, k, seen, depth + 1)? || !plain_graph(s, v, seen, depth + 1)? {
+                return Some(false);
+            }
+        }
+    }
+    Some(true)
+}
+unsafe fn identity(o: O) -> Option<Owned> {
+    owned(api!(25, unsafe extern "C" fn(O) -> O)(o))
+}
+unsafe fn clone_graph(s: O, o: O, memo: O) -> Option<Owned> {
+    let typ = owned(api!(18, unsafe extern "C" fn(O) -> O)(o))?;
+    if atomic(s, typ.0) {
+        inc(o);
+        return Some(Owned(o));
+    }
+    let id = identity(o)?;
+    let existing = api!(5, unsafe extern "C" fn(O, O) -> O)(memo, id.0);
+    if !existing.is_null() {
+        inc(existing);
+        return Some(Owned(existing));
+    }
+    let is_list = typ.0 == key(s, 49);
+    let size = if is_list {
+        api!(6, unsafe extern "C" fn(O) -> isize)(o)
+    } else {
+        0
+    };
+    let result = if is_list {
+        owned(api!(11, unsafe extern "C" fn(isize) -> O)(size))?
+    } else {
+        dict()?
+    };
+    if api!(23, unsafe extern "C" fn(O, O, O) -> i32)(memo, id.0, result.0) < 0 {
+        return None;
+    }
+    if is_list {
+        for i in 0..size {
+            let v = api!(7, unsafe extern "C" fn(O, isize) -> O)(o, i);
+            let child = clone_graph(s, v, memo)?;
+            if api!(12, unsafe extern "C" fn(O, isize, O) -> i32)(result.0, i, child.take()) < 0 {
+                return None;
+            }
+        }
+    } else {
+        let mut pos = 0;
+        let mut k = ptr::null_mut();
+        let mut v = ptr::null_mut();
+        while api!(
+            22,
+            unsafe extern "C" fn(O, *mut isize, *mut O, *mut O) -> i32
+        )(o, &mut pos, &mut k, &mut v)
+            != 0
+        {
+            let ck = clone_graph(s, k, memo)?;
+            let cv = clone_graph(s, v, memo)?;
+            if api!(23, unsafe extern "C" fn(O, O, O) -> i32)(result.0, ck.0, cv.0) < 0 {
+                return None;
+            }
+        }
+    }
+    // Match copy._keep_alive: retain source containers while the memo survives.
+    let memo_id = identity(memo)?;
+    let mut keeper = api!(5, unsafe extern "C" fn(O, O) -> O)(memo, memo_id.0);
+    let keepalive;
+    if keeper.is_null() {
+        keepalive = owned(api!(11, unsafe extern "C" fn(isize) -> O)(0))?;
+        keeper = keepalive.0;
+        if api!(23, unsafe extern "C" fn(O, O, O) -> i32)(memo, memo_id.0, keeper) < 0 {
+            return None;
+        }
+    }
+    if api!(24, unsafe extern "C" fn(O, O) -> i32)(keeper, o) < 0 {
+        return None;
+    }
+    Some(result)
+}
+unsafe extern "C" fn deepcopy(s: O, a: *const O, n: isize) -> O {
+    let Some(a) = args(a, n, 2) else {
+        return scalar_fallback(key(s, 59), std::slice::from_raw_parts(a, n as usize));
+    };
+    let result = (|| {
+        // Custom objects, subclasses and tuples delegate as a whole graph. This
+        // prevents custom callbacks from mutating a dictionary during PyDict_Next.
+        let mut seen = std::collections::HashSet::new();
+        if !plain_graph(s, a[0], &mut seen, 0)? || seen.contains(&(a[1] as usize)) {
+            return None;
+        }
+        let memo;
+        let m = if a[1] == key(s, 47) {
+            memo = dict()?;
+            memo.0
+        } else {
+            dictionary(s, a[1])?;
+            a[1]
+        };
+        clone_graph(s, a[0], m)
+    })();
+    if let Some(result) = result {
+        return result.take();
+    }
+    if !api!(4, unsafe extern "C" fn() -> O)().is_null() {
+        return ptr::null_mut();
+    }
+    scalar_fallback(key(s, 59), a)
+}
 
 unsafe fn scalar_fallback(reference: O, values: &[O]) -> O {
     api!(8, unsafe extern "C" fn())();
@@ -579,10 +793,10 @@ pub unsafe extern "C" fn wt_python_scalar(index: u32, context: O) -> O {
 }
 #[no_mangle]
 pub unsafe extern "C" fn wt_python_init(addresses: *const usize, len: usize, context: O) -> O {
-    if len != 22 || context.is_null() {
+    if len != 26 || context.is_null() {
         return ptr::null_mut();
     }
-    let table: [usize; 22] = std::slice::from_raw_parts(addresses, 22)
+    let table: [usize; 26] = std::slice::from_raw_parts(addresses, 26)
         .try_into()
         .unwrap();
     if table.contains(&0) {
@@ -595,7 +809,7 @@ pub unsafe extern "C" fn wt_python_init(addresses: *const usize, len: usize, con
     } else {
         let _ = API.set(table);
     }
-    if api!(9, unsafe extern "C" fn(O) -> isize)(context) != 53 {
+    if api!(9, unsafe extern "C" fn(O) -> isize)(context) != 62 {
         return ptr::null_mut();
     }
     let result = (|| {

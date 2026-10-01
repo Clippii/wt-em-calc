@@ -83,7 +83,7 @@ def activate():
     mode = _activate_cython()
     if mode == 'reference':
         return mode
-    from rust_backend import load, atmosphere_function, orientation_function, aero_function, matrix_quaternion_function, vector_function, integrate_function, controller_function, seeker_functions, scalar_functions
+    from rust_backend import load, atmosphere_function, orientation_function, aero_function, matrix_quaternion_function, vector_function, integrate_function, controller_function, seeker_functions, scalar_functions, copy_function, finite_function
     library = load(__file__)
     replacements = {}
     # The Cython build already includes its own faster memo-aware copier.
@@ -102,6 +102,15 @@ def activate():
     import shared_seeker
     import acceleration_control
     if library is not None:
+        if library._python:
+            import copy
+            import flight_session
+            native_copy=copy_function(library,copy.deepcopy)
+            replacements[copy.deepcopy]=native_copy
+            replacements[flight_session.deepcopy]=native_copy
+            import state_binary32
+            replacements[flight_session.finite]=finite_function(library,flight_session.finite,True)
+            replacements[state_binary32.validate_flight_numbers]=finite_function(library,state_binary32.validate_flight_numbers)
         originals=tuple(getattr(kernels,name) for name in ('f32','add','sub','mul','div'))
         replacements.update(zip(originals,scalar_functions(library,originals)))
         seeker_update,seeker_slew=seeker_functions(library,shared_seeker.update,shared_seeker.slew)
