@@ -1641,7 +1641,50 @@ bound_method!(bound_force, 0);
 bound_method!(bound_moment, 1);
 bound_method!(bound_cl, 2);
 bound_method!(bound_cd, 3);
-bound_method!(bound_polar, 4);
+unsafe extern "C" fn bound_polar(self_: O, argv: *const O, n: isize, keywords: O) -> O {
+    if n == 5 && keywords.is_null() && fast_layout() {
+        if let Some(result) = fast_public_polar(self_, argv) {
+            return result;
+        }
+    }
+    bound_call(self_, argv, n, keywords, 4)
+}
+
+#[inline(always)]
+unsafe fn fast_public_polar(self_: O, argv: *const O) -> Option<O> {
+    // This path performs no Python conversions or callbacks before copying
+    // inputs. The generic binding retains defaults, keywords and fallback.
+    let s = *(*self_.cast::<TupleObject>()).items.as_ptr();
+    let context = (*s.cast::<TupleObject>()).items.as_ptr();
+    let p = *argv;
+    if (*p.cast::<Header>()).kind != *context.add(51) {
+        return None;
+    }
+    let float_type = *context.add(53);
+    let mut values = [0.; 4];
+    for (i, value) in values.iter_mut().enumerate() {
+        let obj = *argv.add(i + 1);
+        if (*obj.cast::<Header>()).kind != float_type {
+            return None;
+        }
+        *value = (*obj.cast::<FloatObject>()).value;
+    }
+    let version = (*p.cast::<DictObject>()).version;
+    let result = PROFILE.with(|cache| {
+        let c = cache.borrow();
+        if c.context == s as usize
+            && c.identity == p as usize
+            && c.version == version
+            && c.values[12] == 1.
+        {
+            super::bounded_polar(&c.values, values[0], values[1], values[2], values[3], 2)
+        } else {
+            None
+        }
+    })?;
+    // Allocation failure must return NULL with the interpreter error intact.
+    Some(list(&result).map_or(ptr::null_mut(), Owned::take))
+}
 bound_method!(bound_rotate, 5);
 bound_method!(bound_residual, 6);
 bound_method!(bound_coast, 7);
