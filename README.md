@@ -12,6 +12,31 @@ Missiles are listed as **Display name [missile_id]**, excluding DEFAULT profiles
 
 The missile solver uses optimized state handling and optional compiled helpers while preserving the original simulation results. The Windows and Docker build scripts include the helpers; a source checkout can build them with `python scripts/build_missile_backend.py` when Cython and a C compiler are available. Without them, the faster Python path runs automatically. `WT_MISSILE_BACKEND=reference` selects the original implementation for comparison, and `WT_MISSILE_WORKERS` limits concurrent jobs to 1–4.
 
+Optional Rust kernels accelerate aerodynamic lift/drag, rotated polar forces,
+aircraft force/moment assembly, missile atmosphere and quaternion updates. With
+Rust/Cargo installed, build them using `python scripts/build_rust_backend.py`.
+The library has no Python ABI dependency and no third-party Rust dependencies.
+Docker builds include it; source and Windows installations can build it locally.
+
+`WT_NUMERIC_BACKEND=auto` (the default) uses a verified local library for Python
+kernels and missile atmosphere/orientation, while keeping the existing Cython
+EM kernels preferred. Missing or stale Rust builds fall back automatically.
+`WT_NUMERIC_BACKEND=python` disables Rust; `WT_NUMERIC_BACKEND=rust` requires the
+library and also opts compiled EM modules into the Rust calls. Selecting
+`WT_MISSILE_BACKEND=reference` continues to bypass all missile acceleration.
+No compiler runs during startup. Rebuild after editing native sources.
+
+Run `python scripts/test_rust_backend.py --benchmark` to check exact reference
+parity and measure call costs including Python marshalling. Local Windows
+measurements found approximately 9× faster missile quaternion updates, 8.5×
+faster atmosphere evaluation, 2.9× faster moment assembly and 1.4× faster polar
+force calls. The optional batch API (`rust_backend.polar_batch`) evaluates a
+361-angle sweep about 8.5× faster, but is not yet used by the adaptive EM solver.
+A complete 10-second AIM-9L flight improved from a median 0.624 s to 0.585 s
+across seven runs per backend (about 6.2% less runtime), with identical output.
+These compare against the Python path, not the existing Cython build; full EM
+diagram and altitude-job speedups have not been measured.
+
 For Windows 10/11 x64:
 
 1. Extract the entire Windows ZIP into a writable folder.

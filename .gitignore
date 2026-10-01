@@ -1,4 +1,16 @@
 *
+!/native/
+!/native/Cargo.toml
+!/native/Cargo.lock
+!/native/src/
+!/native/src/*.rs
+!/scripts/rust_backend.py
+!/scripts/build_rust_backend.py
+!/scripts/test_rust_backend.py
+!/app/workbench.css
+!/.github/
+!/.github/workflows/
+!/.github/workflows/rust-numerics.yml
 !/.dockerignore
 !/.gitattributes
 !/.gitignore

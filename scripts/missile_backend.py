@@ -13,7 +13,7 @@ import sys
 from build_missile_backend import DIRECTORY, signature
 
 
-def activate():
+def _activate_cython():
     mode = os.environ.get('WT_MISSILE_BACKEND', 'auto')
     if mode not in ('auto', 'python', 'reference', 'compiled'):
         raise ValueError('Unknown WT_MISSILE_BACKEND')
@@ -73,3 +73,34 @@ def activate():
                 if replacement is not None:
                     setattr(module, key, replacement)
     return 'compiled'
+
+
+def activate():
+    mode = _activate_cython()
+    if mode == 'reference':
+        return mode
+    from rust_backend import load, atmosphere_function, orientation_function
+    library = load(__file__)
+    if library is None:
+        return mode
+    import kernels
+    import body_integration
+    replacements = {kernels.atmosphere: atmosphere_function(library, kernels.atmosphere),
+                    body_integration.orientation: orientation_function(library, body_integration.orientation)}
+    scripts = Path(__file__).resolve().parent
+    for module in list(sys.modules.values()):
+        filename = getattr(module, '__file__', None)
+        if not filename:
+            continue
+        path = Path(filename).resolve()
+        if path.parent != scripts/'missile_model' and path.parent != scripts:
+            continue
+        for key, value in list(vars(module).items()):
+            if callable(value):
+                try:
+                    replacement = replacements.get(value)
+                except TypeError:
+                    continue
+                if replacement is not None:
+                    setattr(module, key, replacement)
+    return mode
