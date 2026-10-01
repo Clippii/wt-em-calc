@@ -28,7 +28,7 @@ P = ctypes.POINTER(D)
 def signature():
     digest = hashlib.sha256()
     for file in (ROOT/'native/Cargo.toml', ROOT/'native/Cargo.lock',
-                 ROOT/'native/src/lib.rs', Path(__file__)):
+                 ROOT/'native/src/lib.rs', ROOT/'native/src/aero.rs', Path(__file__)):
         digest.update(file.read_bytes())
     digest.update((sys.platform + platform.machine().lower()).encode())
     return digest.hexdigest()
@@ -66,6 +66,10 @@ def load(module_file):
             library.wt_atmosphere.restype = None
             library.wt_orientation.argtypes = [P, P]
             library.wt_orientation.restype = ctypes.c_uint32
+            library.wt_matrix_quaternion.argtypes = [P, P]
+            library.wt_matrix_quaternion.restype = ctypes.c_uint32
+            library.wt_aero.argtypes = [P, P, P, ctypes.c_size_t, P]
+            library.wt_aero.restype = ctypes.c_uint32
             for name in ('wt_force', 'wt_moment'):
                 function = getattr(library, name)
                 function.argtypes = [P, P]
@@ -156,3 +160,40 @@ def orientation_function(library, reference):
         trig = [dict(sine=result[i],cosine=result[i+1],quadrant=int(result[i+2]),reduced=result[i+3]) for i in (0,4,8)]
         return dict(trig=trig,delta=list(result[12:16]),raw=list(result[16:20]),quaternion=list(result[20:24]))
     return orientation
+
+def aero_function(library, reference):
+    fields=('stabilizer_arm','cx','cx_aoa','cy','cy_limit','front_area','side_area','fins_hor','fins_ver','fin_pressure_limit','damping_geometry','mass')
+    def forces(props,height,velocity,q,omega,**kwargs):
+        defaults=dict(wind=(0.,0.,0.),fins=(0.,0.),additional_cx=0.,additional_lever=0.,dt=1/48,torque=(0.,0.,0.),force=(0.,0.,0.),mass_lost=0.,gravity=True,use_cxi=True,mass_term=0.,angular_environment=(0.,0.,0.),perturbation=0.,body_random=0.)
+        if kwargs.keys()-defaults.keys():return reference(props,height,velocity,q,omega,**kwargs)
+        defaults.update(kwargs);k=defaults
+        try:
+            vectors=(props['axis_quaternion'],props['inertia'],props['angular_damping'],velocity,q,omega,k['wind'],k['fins'],k['torque'],k['force'],k['angular_environment'])
+            if tuple(map(len,vectors))!=(4,3,3,3,4,3,3,2,3,3,3):raise ValueError('vector shape')
+            rows=props['cy_table']
+            if any(len(row)!=3 for row in rows):raise ValueError('table shape')
+            packed=_array([*(props[key] for key in fields),*vectors[0],*vectors[1],*vectors[2]])
+            inputs=_array([height,*velocity,*q,*omega,*k['wind'],*k['fins'],k['additional_cx'],k['additional_lever'],k['dt'],*k['torque'],*k['force'],k['mass_lost'],float(k['gravity']),float(k['use_cxi']),k['mass_term'],*k['angular_environment'],k['perturbation'],k['body_random']])
+            table=_array(v for row in rows for v in row)
+        except (KeyError,TypeError,ValueError):
+            return reference(props,height,velocity,q,omega,**kwargs)
+        result=(D*85)()
+        if packed is None or inputs is None or table is None or not library.wt_aero(packed,inputs,table,len(rows),result):
+            return reference(props,height,velocity,q,omega,**kwargs)
+        r=list(result)
+        def evaluated(i):return dict(drag=r[i:i+3],lift=r[i+3:i+6],force=r[i+6:i+9],cosine=r[i+9],cd=r[i+10],cy=r[i+11])
+        baseline=evaluated(27);flow=r[24:27];active=bool(r[39])
+        return dict(frame=[r[i:i+3] for i in (0,3,6)],axes=[r[i:i+3] for i in (9,12,15)],cm_speed=r[18],mach=r[19],pressure=r[20],local_flow=r[21:24],flow=flow,baseline=baseline,fin_active=active,fin_limited=bool(r[40]),deflection=r[41:43],fin_flow=r[43:46] if active else flow,steering=evaluated(46) if active else baseline,moment=r[58:61],damping=r[61:64],damping_clipped=list(map(bool,r[64:67])),angular_acceleration_before_environment=r[67:70],angular_acceleration=r[70:73],acceleration=r[73:76],effective_mass=r[76],perturbation=dict(zip(('force_scale','angle','cosine','sine','lever_fraction'),r[77:82])),perturbed_lever=r[82:85])
+    return forces
+
+
+def matrix_quaternion_function(library, reference):
+    def matrix_quaternion(forward,up,right):
+        if any(len(row)!=3 for row in (forward,up,right)):
+            return reference(forward,up,right)
+        packed=_array((*forward,*up,*right))
+        result=(D*4)()
+        if packed is None or not library.wt_matrix_quaternion(packed,result):
+            return reference(forward,up,right)
+        return list(result)
+    return matrix_quaternion

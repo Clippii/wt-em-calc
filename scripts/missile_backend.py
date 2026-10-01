@@ -79,7 +79,7 @@ def activate():
     mode = _activate_cython()
     if mode == 'reference':
         return mode
-    from rust_backend import load, atmosphere_function, orientation_function
+    from rust_backend import load, atmosphere_function, orientation_function, aero_function, matrix_quaternion_function
     library = load(__file__)
     replacements = {}
     # The Cython build already includes its own faster memo-aware copier.
@@ -90,8 +90,12 @@ def activate():
         replacements[copy.deepcopy] = deepcopy
     import kernels
     import body_integration
+    import aero_vectors
+    import control_frame
     if library is not None:
-        replacements.update({kernels.atmosphere: atmosphere_function(library, kernels.atmosphere),
+        replacements.update({control_frame.matrix_quaternion: matrix_quaternion_function(library, control_frame.matrix_quaternion),
+                             aero_vectors.forces: aero_function(library, aero_vectors.forces),
+                             kernels.atmosphere: atmosphere_function(library, kernels.atmosphere),
                              body_integration.orientation: orientation_function(library, body_integration.orientation)})
     scripts = Path(__file__).resolve().parent
     for module in list(sys.modules.values()):

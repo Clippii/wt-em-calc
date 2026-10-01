@@ -52,6 +52,54 @@ class Parity(unittest.TestCase):
     def exact(self, actual, expected):
         self.assertEqual(struct.pack('<d', actual), struct.pack('<d', expected))
 
+    def test_aerodynamic_forces(self):
+        import aero_vectors
+        p=kernels.aero_properties(dict(finsAoaHor=.2,finsAoaVer=.3))
+        p.update(axis_quaternion=[0.,0.,0.,1.],cy_table=[[0.,1.,1.],[1.,1.,1.2],[4.,0.,.7]])
+        f=rust.aero_function(self.library,lambda *a,**k:self.fail('Unexpected aerodynamic fallback'))
+        def exact(a,b,path=''):
+            if isinstance(a,dict):
+                self.assertEqual(a.keys(),b.keys(),path)
+                for key in a:exact(a[key],b[key],path+'/'+key)
+            elif isinstance(a,list):
+                self.assertEqual(len(a),len(b),path)
+                for i,(x,y) in enumerate(zip(a,b)):exact(x,y,path+'/'+str(i))
+            else:
+                self.assertEqual(struct.pack('<d',a),struct.pack('<d',b),path)
+        r=random.Random(934)
+        for i in range(1000):
+            q=[r.uniform(-1,1) for _ in range(4)]
+            norm=sum(x*x for x in q)**.5
+            q=[x/norm for x in q]
+            args=(p,r.uniform(-100,30000),[r.uniform(-1400,1400) for _ in range(3)],q,[r.uniform(-5,5) for _ in range(3)])
+            kwargs=dict(fins=[r.uniform(-1,1),r.uniform(-1,1)],
+                        perturbation=r.choice([0,.49,.5,1.99,2,3]),body_random=r.uniform(-1,1),
+                        gravity=i%2==0,use_cxi=i%3==0,angular_environment=[.01,-.02,.03],
+                        mass_lost=r.uniform(0,20),mass_term=.02,additional_cx=.03,
+                        additional_lever=.1,wind=[10.,-2.,3.],torque=[.1,.2,-.3],force=[20.,-10.,30.])
+            exact(f(*args,**kwargs),aero_vectors.forces(*args,**kwargs))
+        for mach in (0.,.61,1.,1.4,4.):
+            for delta in (-1e-6,0.,1e-6):
+                speed=max(0.,mach+delta)*kernels.atmosphere(0.)['sound_speed']
+                args=(p,0.,[speed,0.,0.],[0.,0.,0.,1.],[0.,0.,0.])
+                exact(f(*args),aero_vectors.forces(*args))
+        p['mass']=0.
+        args=(p,0.,[100.,0.,0.],[0.,0.,0.,1.],[0.,0.,0.])
+        exact(f(*args),aero_vectors.forces(*args))
+        result=f(p,0.,[0.,0.,0.],[0.,0.,0.,1.],[0.,0.,0.])
+        self.assertIs(result['baseline'],result['steering'])
+        self.assertIs(result['flow'],result['fin_flow'])
+
+    def test_matrix_quaternion(self):
+        import control_frame
+        accelerated=rust.matrix_quaternion_function(self.library,lambda *a:self.fail('Unexpected quaternion fallback'))
+        rng=random.Random(1024)
+        rows=[([1.,0.,0.],[0.,1.,0.],[0.,0.,1.]),([0.,0.,0.],)*3]
+        rows.extend(tuple([rng.uniform(-1.,1.) for _ in range(3)] for _ in range(3)) for _ in range(1000))
+        for args in rows:
+            for a,b in zip(accelerated(*args),control_frame.matrix_quaternion(*args)):
+                self.exact(a,b)
+
     def test_polars(self):
         rng = random.Random(932)
         boundaries = [-180.,-140.,-90.,-40.,-19.,-14.,-10.,0.,10.,16.,21.,40.,90.,140.,180.]
@@ -146,7 +194,8 @@ class Parity(unittest.TestCase):
             outputs=[]
             for mode in ('python', 'fast-python', 'rust'):
                 env=dict(os.environ,WT_MISSILE_BACKEND='python' if mode=='python' else 'auto',
-                         WT_NUMERIC_BACKEND='rust' if mode=='rust' else 'python')
+                         WT_NUMERIC_BACKEND='rust' if 'rust' in mode else 'python',
+                 WT_BENCH_PREVIOUS_RUST='1' if mode=='previous-rust' else '0')
                 run=subprocess.run([sys.executable,str(rust.ROOT/'scripts/missile_worker.py')],
                                    input=json.dumps(request),capture_output=True,text=True,env=env,timeout=60)
                 self.assertEqual(run.returncode,0,run.stdout+run.stderr)
@@ -186,6 +235,16 @@ def benchmark():
         'missile orientation':(lambda:body_integration.orientation([0.,0.,0.,1.],[0.01,-0.02,0.03]),lambda:orientation([0.,0.,0.,1.],[0.01,-0.02,0.03])),
         '361-angle sweep':(lambda:[REF_POLAR.calc_c(POLAR,*row) for row in rows],lambda:rust.polar_batch(POLAR,rows))}
     atmosphere=rust.atmosphere_function(rust.load(__file__),kernels.atmosphere)
+    import aero_vectors
+    props=kernels.aero_properties(dict(finsAoaHor=.2,finsAoaVer=.3))
+    props.update(axis_quaternion=[0.,0.,0.,1.],cy_table=[])
+    args=(props,5000.,[600.,10.,20.],[0.,0.,0.,1.],[.1,.2,.3])
+    aero=rust.aero_function(rust.load(__file__),aero_vectors.forces)
+    pairs['missile aerodynamic forces']=(lambda:aero_vectors.forces(*args,fins=(.1,.2)),lambda:aero(*args,fins=(.1,.2)))
+    import control_frame
+    matrix=rust.matrix_quaternion_function(rust.load(__file__),control_frame.matrix_quaternion)
+    columns=([.8,.6,0.],[-.6,.8,0.],[0.,0.,1.])
+    pairs['controller quaternion search']=(lambda:control_frame.matrix_quaternion(*columns),lambda:matrix(*columns))
     orientation=rust.orientation_function(rust.load(__file__),body_integration.orientation)
     for name,(old,new) in pairs.items():
         count=300 if 'sweep' in name else 10000
@@ -195,6 +254,9 @@ def benchmark():
 
 
 def flight_worker():
+    if os.environ.get('WT_BENCH_PREVIOUS_RUST') == '1':
+        rust.aero_function=lambda library,reference:reference
+        rust.matrix_quaternion_function=lambda library,reference:reference
     import missile_worker
     request=dict(missile='us_aim9l_sidewinder',duration=10,
                  launcher=dict(position=[0,5000,0],velocity=[300,0,0],angles=[0,0,0]),
@@ -209,9 +271,10 @@ def flight_worker():
 
 def benchmark_flight():
     results=[]
-    for mode in ('python','fast-python','rust'):
+    for mode in ('python','fast-python','previous-rust','rust'):
         env=dict(os.environ,WT_MISSILE_BACKEND='python' if mode=='python' else 'auto',
-                 WT_NUMERIC_BACKEND='rust' if mode=='rust' else 'python')
+                 WT_NUMERIC_BACKEND='rust' if 'rust' in mode else 'python',
+                 WT_BENCH_PREVIOUS_RUST='1' if mode=='previous-rust' else '0')
         run=subprocess.run([sys.executable,__file__,'--flight-worker'],env=env,
                            capture_output=True,text=True,check=True,timeout=120)
         result=json.loads(run.stdout);results.append(result)

@@ -2,6 +2,7 @@
 //! Double intermediates are intentional: replacing them with f32 arithmetic can
 //! introduce double-rounding differences from the reference implementation.
 use std::cell::Cell;
+mod aero;
 thread_local! {static OVERFLOW: Cell<bool> = Cell::new(false);}
 #[inline]
 fn f(x: f64) -> f64 {

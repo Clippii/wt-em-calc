@@ -13,13 +13,13 @@ Missiles are listed as **Display name [missile_id]**, excluding DEFAULT profiles
 The missile solver uses optimized state handling and optional compiled helpers while preserving the original simulation results. The Windows and Docker build scripts include the helpers; a source checkout can build them with `python scripts/build_missile_backend.py` when Cython and a C compiler are available. Without them, the faster Python path runs automatically. `WT_MISSILE_BACKEND=reference` selects the original implementation for comparison, and `WT_MISSILE_WORKERS` limits concurrent jobs to 1â€“4.
 
 Optional Rust kernels accelerate aerodynamic lift/drag, rotated polar forces,
-aircraft force/moment assembly, missile atmosphere and quaternion updates. With
+aircraft force/moment assembly, the complete missile aerodynamic force block, atmosphere, body orientation and controller quaternion search. With
 Rust/Cargo installed, build them using `python scripts/build_rust_backend.py`.
 The library has no Python ABI dependency and no third-party Rust dependencies.
 Docker builds include it; source and Windows installations can build it locally.
 
 `WT_NUMERIC_BACKEND=auto` (the default) uses a verified local library for Python
-kernels and missile atmosphere/orientation, while keeping the existing Cython
+kernels and missile forces/atmosphere/orientation, while keeping the existing Cython
 EM kernels preferred. Missing or stale Rust builds fall back automatically.
 `WT_NUMERIC_BACKEND=python` disables Rust; `WT_NUMERIC_BACKEND=rust` requires the
 library and also opts compiled EM modules into the Rust calls. Selecting
@@ -39,10 +39,15 @@ measurements found approximately 8.6Ã— faster missile quaternion updates, 8Ã—
 faster atmosphere evaluation, 2.8Ã— faster moment assembly and 1.4Ã— faster polar
 force calls. The optional batch API (`rust_backend.polar_batch`) evaluates a
 361-angle sweep about 8Ã— faster, but is not yet used by the adaptive EM solver.
-A complete 10-second AIM-9L flight with Rust and the Python free wins improved
-from a median 0.618 s to 0.494 s across seven runs per backend (about 20% less
-runtime), with identical output. The Python free wins alone reached 0.513 s;
-Rust alone initially reduced runtime about 5%.
+The complete missile aerodynamic force block is about 10× faster including
+marshalling (149 µs to 15 µs); the controller quaternion search is about 57×
+faster (181 µs to 3.2 µs). A complete 10-second AIM-9L flight with Rust and the
+Python free wins improved from a median 0.640 s to 0.303 s across seven runs
+per configuration (2.11× faster, about 53% less runtime), with identical output.
+Python-only improvements reached 0.523 s. The preceding Rust version, before
+porting the force block and controller search, reached 0.486 s; these two larger
+ports remove another 38% of runtime.
+Measurements use a Ryzen 9 9950X3D, Python 3.12.14 and Rust 1.98.1 on Windows x64.
 These compare against the Python path, not the existing Cython build; full EM
 diagram and altitude-job speedups have not been measured.
 
