@@ -210,6 +210,27 @@ class Parity(unittest.TestCase):
                 expected=REF_POLAR.calc_c(p,a,rotation,0.17,0.83)
                 for x,y in zip(actual,expected):self.exact(x,y)
 
+    def test_bounded_polar_matches_checked_kernel(self):
+        # Compare independent checked ABI against direct bounded specialization,
+        # including near-bound profiles and inputs that select checked fallback.
+        rng=random.Random(20261001)
+        for i in range(2000):
+            p={k:rng.uniform(-1000.,1000.) for k in rust.FIELDS}
+            p['maxDistAng']=rng.uniform(-180.,180.)
+            p['kq']=rng.uniform(-1e5,1e5)
+            # Use ABI field positions rather than guessing force-scale names.
+            p[rust.FIELDS[21]]=rng.uniform(-1e5,1e5)
+            p[rust.FIELDS[22]]=rng.uniform(-1e5,1e5)
+            if i%4==0:p[rust.FIELDS[3]]=1001.
+            packed=(rust.D*24)(*(p[k] for k in rust.FIELDS))
+            args=(rng.uniform(-181.,181.),rng.uniform(-181.,181.),
+                  rng.uniform(-1001.,1001.),rng.uniform(-1001.,1001.))
+            out=(rust.D*2)()
+            ok=self.library.wt_polar(packed,*args,2,out)
+            self.assertEqual(ok,1)
+            actual=rust.polar(self.library,p,*args)
+            for x,y in zip(actual,out):self.exact(x,y)
+
     def test_assembly(self):
         rng=random.Random(48)
         for _ in range(1000):

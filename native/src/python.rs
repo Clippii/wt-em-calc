@@ -8,10 +8,11 @@
 use std::cell::RefCell;
 use std::ffi::{c_char, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::OnceLock;
 type O = *mut c_void;
 static API: OnceLock<[usize; 28]> = OnceLock::new();
+static API_BASE: AtomicPtr<usize> = AtomicPtr::new(ptr::null_mut());
 static FAST_LAYOUT: AtomicBool = AtomicBool::new(false);
 // Optional CPython 3.11/3.12 fast path, matching their public cpython headers.
 // Python probes every layout before enabling it. Other runtimes use Stable ABI.
@@ -61,7 +62,7 @@ fn fast_layout() -> bool {
 }
 macro_rules! api {
     ($i:expr, $t:ty) => {
-        std::mem::transmute::<usize, $t>(API.get().unwrap()[$i])
+        std::mem::transmute::<usize, $t>(*API_BASE.load(Ordering::Acquire).add($i))
     };
 }
 unsafe fn inc(o: O) {
@@ -156,8 +157,18 @@ unsafe fn sequence(s: O, o: O, out: &mut [f64]) -> Option<()> {
         } else {
             (*o.cast::<TupleObject>()).items.as_ptr()
         };
+        let float_type = key(s, 53);
         for (i, v) in out.iter_mut().enumerate() {
-            *v = number(s, *items.add(i))?;
+            let item = *items.add(i);
+            let value = if (*item.cast::<Header>()).kind == float_type {
+                (*item.cast::<FloatObject>()).value
+            } else {
+                api!(3, unsafe extern "C" fn(O) -> f64)(item)
+            };
+            if !value.is_finite() || value.abs() > f32::MAX as f64 {
+                return None;
+            }
+            *v = value;
         }
         return Some(());
     }
@@ -196,11 +207,26 @@ unsafe fn list(v: &[f64]) -> Option<Owned> {
     for (i, x) in v.iter().enumerate() {
         let value = float(*x)?.take();
         // PyList_SetItem steals the new reference, including on failure.
-        if api!(12, unsafe extern "C" fn(O, isize, O) -> i32)(result.0, i as isize, value) < 0 {
-            return None;
-        }
+        set_new_item(result.0, i as isize, value)?;
     }
     Some(result)
+}
+unsafe fn set_new_item(list: O, index: isize, value: O) -> Option<()> {
+    // Only used for fresh, private lists with a null slot at this valid index.
+    // Equivalent to CPython's PyList_SET_ITEM; ownership is stolen once.
+    if fast_layout() {
+        debug_assert!(index >= 0 && index < (*list.cast::<ListObject>()).base.size);
+        (*list.cast::<ListObject>())
+            .items
+            .cast_mut()
+            .add(index as usize)
+            .write(value);
+        Some(())
+    } else if api!(12, unsafe extern "C" fn(O, isize, O) -> i32)(list, index, value) < 0 {
+        None
+    } else {
+        Some(())
+    }
 }
 unsafe fn dict() -> Option<Owned> {
     owned(api!(13, unsafe extern "C" fn() -> O)())
@@ -284,6 +310,11 @@ unsafe fn polar_input(s: O, p: O) -> Option<[f64; 24]> {
         }
         *v = number(s, obj)?;
     }
+    out[12] = if super::bounded_polar_profile(&out) {
+        1.
+    } else {
+        0.
+    };
     if cacheable && api!(4, unsafe extern "C" fn() -> O)().is_null() {
         PROFILE.with(|cache| {
             *cache.borrow_mut() = ProfileCache {
@@ -296,6 +327,23 @@ unsafe fn polar_input(s: O, p: O) -> Option<[f64; 24]> {
     }
     Some(out)
 }
+unsafe fn polar_values(
+    p: &[f64; 24],
+    a: f64,
+    rotation: f64,
+    added: f64,
+    drag: f64,
+    mode: u32,
+    out: *mut f64,
+) -> u32 {
+    if p[12] == 1. {
+        if let Some(v) = super::bounded_polar(p, a, rotation, added, drag, mode) {
+            std::ptr::copy_nonoverlapping(v.as_ptr(), out, 2);
+            return 1;
+        }
+    }
+    super::wt_polar(p.as_ptr(), a, rotation, added, drag, mode, out)
+}
 unsafe extern "C" fn polar(s: O, a: *const O, n: isize) -> O {
     finish(
         s,
@@ -307,8 +355,8 @@ unsafe extern "C" fn polar(s: O, a: *const O, n: isize) -> O {
                 return None;
             }
             let mut out = [0.; 2];
-            if super::wt_polar(
-                p.as_ptr(),
+            if polar_values(
+                &p,
                 number(s, a[1])?,
                 number(s, a[2])?,
                 number(s, a[3])?,
@@ -411,8 +459,8 @@ unsafe extern "C" fn batch(s: O, a: *const O, n: isize) -> O {
                 let mut input = [0.; 4];
                 sequence(s, row, &mut input)?;
                 let mut out = [0.; 2];
-                if super::wt_polar(
-                    p.as_ptr(),
+                if polar_values(
+                    &p,
                     input[0],
                     input[1],
                     input[2],
@@ -1181,6 +1229,7 @@ pub unsafe extern "C" fn wt_python_init(
     } else {
         let _ = API.set(table);
     }
+    API_BASE.store(API.get().unwrap().as_ptr().cast_mut(), Ordering::Release);
     if api!(9, unsafe extern "C" fn(O) -> isize)(context) != 144 {
         return ptr::null_mut();
     }
@@ -1288,15 +1337,8 @@ unsafe fn bound_call(self_: O, argv: *const O, n: isize, keywords: O, kind: u32)
                             } else {
                                 2
                             };
-                            if super::wt_polar(
-                                p.as_ptr(),
-                                angle,
-                                rotation,
-                                added,
-                                drag,
-                                mode,
-                                r.as_mut_ptr(),
-                            ) == 0
+                            if polar_values(&p, angle, rotation, added, drag, mode, r.as_mut_ptr())
+                                == 0
                                 || !r.iter().all(|v| v.is_finite())
                             {
                                 return None;

@@ -32,114 +32,205 @@ fn sub(a: f64, b: f64) -> f64 {
 fn mul(a: f64, b: f64) -> f64 {
     f(a * b)
 }
-#[inline]
-fn div(a: f64, b: f64) -> f64 {
-    f(a / b)
-}
-#[inline]
-fn sin(x: f64) -> f64 {
-    f(x.sin())
-}
-
 // ABI order matches polar_model.FIELDS; values retain their original f64 values.
-fn cl(p: &[f64], angle: f64) -> f64 {
-    let a = f(angle);
-    if p[9] <= a && a <= p[8] {
-        return add(mul(mul(a, p[3]), p[23]), p[0]);
+#[inline(always)]
+fn polar_f<const CHECK: bool>(x: f64) -> f64 {
+    if CHECK {
+        f(x)
+    } else {
+        (x as f32) as f64
     }
-    let positive = add(a, f(0.01)) >= p[8];
+}
+#[inline(always)]
+fn polar_add<const CHECK: bool>(a: f64, b: f64) -> f64 {
+    polar_f::<CHECK>(a + b)
+}
+#[inline(always)]
+fn polar_sub<const CHECK: bool>(a: f64, b: f64) -> f64 {
+    polar_f::<CHECK>(a - b)
+}
+#[inline(always)]
+fn polar_mul<const CHECK: bool>(a: f64, b: f64) -> f64 {
+    polar_f::<CHECK>(a * b)
+}
+#[inline(always)]
+fn polar_div<const CHECK: bool>(a: f64, b: f64) -> f64 {
+    polar_f::<CHECK>(a / b)
+}
+#[inline(always)]
+fn polar_sin<const CHECK: bool>(a: f64) -> f64 {
+    polar_f::<CHECK>(a.sin())
+}
+fn cl<const CHECK: bool>(p: &[f64], angle: f64) -> f64 {
+    let a = polar_f::<CHECK>(angle);
+    if p[9] <= a && a <= p[8] {
+        return polar_add::<CHECK>(polar_mul::<CHECK>(polar_mul::<CHECK>(a, p[3]), p[23]), p[0]);
+    }
+    let positive = polar_add::<CHECK>(a, polar_f::<CHECK>(0.01)) >= p[8];
     let s = if positive { 1. } else { -1. };
     let crit = p[if positive { 6 } else { 7 }];
     let cy = p[if positive { 4 } else { 5 }];
     let after = p[if positive { 20 } else { 19 }];
-    let da = sub(a, crit);
-    if mul(da, s) <= 0. {
-        let x = sub(crit, a);
-        return sub(
+    let da = polar_sub::<CHECK>(a, crit);
+    if polar_mul::<CHECK>(da, s) <= 0. {
+        let x = polar_sub::<CHECK>(crit, a);
+        return polar_sub::<CHECK>(
             cy,
-            mul(mul(mul(x, x), s), p[if positive { 10 } else { 11 }]),
+            polar_mul::<CHECK>(
+                polar_mul::<CHECK>(polar_mul::<CHECK>(x, x), s),
+                p[if positive { 10 } else { 11 }],
+            ),
         );
     }
     let maxang = 40_f64.max(p[17]);
-    let sa = mul(s, a);
+    let sa = polar_mul::<CHECK>(s, a);
     if sa <= maxang {
         if sa <= p[17] {
             let pa = p[15];
-            if mul(da, s) < pa {
-                return sub(cy, mul(mul(mul(da, da), s), p[16]));
+            if polar_mul::<CHECK>(da, s) < pa {
+                return polar_sub::<CHECK>(
+                    cy,
+                    polar_mul::<CHECK>(polar_mul::<CHECK>(polar_mul::<CHECK>(da, da), s), p[16]),
+                );
             }
-            let h = mul(sin(mul(f(0.039269909262657166), p[17])), after);
-            let x = sub(mul(sub(p[17], pa), s), crit);
-            let den = mul(x, x);
-            let coeff = if den > f(4e-19) {
-                div(sub(sub(cy, h), mul(mul(mul(pa, pa), s), p[16])), den)
+            let h = polar_mul::<CHECK>(
+                polar_sin::<CHECK>(polar_mul::<CHECK>(
+                    polar_f::<CHECK>(0.039269909262657166),
+                    p[17],
+                )),
+                after,
+            );
+            let x = polar_sub::<CHECK>(polar_mul::<CHECK>(polar_sub::<CHECK>(p[17], pa), s), crit);
+            let den = polar_mul::<CHECK>(x, x);
+            let coeff = if den > polar_f::<CHECK>(4e-19) {
+                polar_div::<CHECK>(
+                    polar_sub::<CHECK>(
+                        polar_sub::<CHECK>(cy, h),
+                        polar_mul::<CHECK>(
+                            polar_mul::<CHECK>(polar_mul::<CHECK>(pa, pa), s),
+                            p[16],
+                        ),
+                    ),
+                    den,
+                )
             } else {
                 0.
             };
-            let x = sub(mul(p[17], s), a);
-            return add(mul(mul(x, x), coeff), h);
+            let x = polar_sub::<CHECK>(polar_mul::<CHECK>(p[17], s), a);
+            return polar_add::<CHECK>(polar_mul::<CHECK>(polar_mul::<CHECK>(x, x), coeff), h);
         }
-        return mul(after, sin(mul(mul(a, f(0.039269909262657166)), s)));
+        return polar_mul::<CHECK>(
+            after,
+            polar_sin::<CHECK>(polar_mul::<CHECK>(
+                polar_mul::<CHECK>(a, polar_f::<CHECK>(0.039269909262657166)),
+                s,
+            )),
+        );
     }
     if sa <= 140. {
         let local_sign = if sa > 90. { -s } else { s };
-        let local_angle = if sa > 90. { sub(180., sa) } else { sa };
-        let one = sin(mul(f(0.039269909262657166), maxang));
-        let two = sin(sub(
-            f(-1.5707963705062866),
-            mul(0_f64.max(add(maxang, -40.)), f(0.03141592815518379)),
+        let local_angle = if sa > 90. {
+            polar_sub::<CHECK>(180., sa)
+        } else {
+            sa
+        };
+        let one = polar_sin::<CHECK>(polar_mul::<CHECK>(
+            polar_f::<CHECK>(0.039269909262657166),
+            maxang,
         ));
-        let correction = add(two, one);
-        let correction = mul(
-            add(
-                mul(add(mul(sa, f(-0.01)), f(0.3999999761581421)), correction),
+        let two = polar_sin::<CHECK>(polar_sub::<CHECK>(
+            polar_f::<CHECK>(-1.5707963705062866),
+            polar_mul::<CHECK>(
+                0_f64.max(polar_add::<CHECK>(maxang, -40.)),
+                polar_f::<CHECK>(0.03141592815518379),
+            ),
+        ));
+        let correction = polar_add::<CHECK>(two, one);
+        let correction = polar_mul::<CHECK>(
+            polar_add::<CHECK>(
+                polar_mul::<CHECK>(
+                    polar_add::<CHECK>(
+                        polar_mul::<CHECK>(sa, polar_f::<CHECK>(-0.01)),
+                        polar_f::<CHECK>(0.3999999761581421),
+                    ),
+                    correction,
+                ),
                 correction,
             ),
             s,
         );
-        let wave = mul(
-            sin(add(
-                mul(local_angle, f(0.03141592815518379)),
-                f(0.3141592741012573),
+        let wave = polar_mul::<CHECK>(
+            polar_sin::<CHECK>(polar_add::<CHECK>(
+                polar_mul::<CHECK>(local_angle, polar_f::<CHECK>(0.03141592815518379)),
+                polar_f::<CHECK>(0.3141592741012573),
             )),
             local_sign,
         );
-        return mul(add(wave, correction), mul(after, s));
+        return polar_mul::<CHECK>(
+            polar_add::<CHECK>(wave, correction),
+            polar_mul::<CHECK>(after, s),
+        );
     }
-    mul(
-        mul(mul(s, s), after),
-        sin(add(
-            mul(sa, f(0.039269909262657166)),
-            f(-7.0685834884643555),
+    polar_mul::<CHECK>(
+        polar_mul::<CHECK>(polar_mul::<CHECK>(s, s), after),
+        polar_sin::<CHECK>(polar_add::<CHECK>(
+            polar_mul::<CHECK>(sa, polar_f::<CHECK>(0.039269909262657166)),
+            polar_f::<CHECK>(-7.0685834884643555),
         )),
     )
 }
 
-fn cd(p: &[f64], angle: f64) -> f64 {
-    let a = f(angle);
-    let line = add(mul(p[3], a), p[0]);
-    let delta = sub(a, p[if a >= 0. { 6 } else { 7 }]);
+fn cd<const CHECK: bool>(p: &[f64], angle: f64) -> f64 {
+    let a = polar_f::<CHECK>(angle);
+    let line = polar_add::<CHECK>(polar_mul::<CHECK>(p[3], a), p[0]);
+    let delta = polar_sub::<CHECK>(a, p[if a >= 0. { 6 } else { 7 }]);
     let delta = if a < 0. { -delta } else { delta };
-    let cd = add(
-        add(mul(mul(line, line), p[2]), p[1]),
-        if delta >= 0. { mul(delta, p[18]) } else { 0. },
+    let cd = polar_add::<CHECK>(
+        polar_add::<CHECK>(
+            polar_mul::<CHECK>(polar_mul::<CHECK>(line, line), p[2]),
+            p[1],
+        ),
+        if delta >= 0. {
+            polar_mul::<CHECK>(delta, p[18])
+        } else {
+            0.
+        },
     );
-    let bound = add(
-        mul(sin(mul(a, f(0.01745329238474369))).abs(), p[4]),
-        f(0.15),
+    let bound = polar_add::<CHECK>(
+        polar_mul::<CHECK>(
+            polar_sin::<CHECK>(polar_mul::<CHECK>(a, polar_f::<CHECK>(0.01745329238474369))).abs(),
+            p[4],
+        ),
+        polar_f::<CHECK>(0.15),
     );
     cd.min(bound)
 }
 
-fn coefficients(p: &[f64], a: f64, angle: f64, cl_add: f64, cd_coeff: f64) -> [f64; 2] {
-    let cd = mul(cd(p, a), f(cd_coeff));
-    let cl = add(cl(p, a), f(cl_add));
-    let radians = mul(f(angle), f(0.01745329238474369));
-    let sn = sin(radians);
-    let cs = f(radians.cos());
+fn coefficients<const CHECK: bool>(
+    p: &[f64],
+    a: f64,
+    angle: f64,
+    cl_add: f64,
+    cd_coeff: f64,
+) -> [f64; 2] {
+    let cd = polar_mul::<CHECK>(cd::<CHECK>(p, a), polar_f::<CHECK>(cd_coeff));
+    let cl = polar_add::<CHECK>(cl::<CHECK>(p, a), polar_f::<CHECK>(cl_add));
+    let radians = polar_mul::<CHECK>(
+        polar_f::<CHECK>(angle),
+        polar_f::<CHECK>(0.01745329238474369),
+    );
+    let (sn, cs) = radians.sin_cos();
+    let sn = polar_f::<CHECK>(sn);
+    let cs = polar_f::<CHECK>(cs);
     [
-        mul(sub(mul(cs, cd), mul(cl, sn)), p[21]),
-        mul(add(mul(cs, cl), mul(cd, sn)), p[22]),
+        polar_mul::<CHECK>(
+            polar_sub::<CHECK>(polar_mul::<CHECK>(cs, cd), polar_mul::<CHECK>(cl, sn)),
+            p[21],
+        ),
+        polar_mul::<CHECK>(
+            polar_add::<CHECK>(polar_mul::<CHECK>(cs, cl), polar_mul::<CHECK>(cd, sn)),
+            p[22],
+        ),
     ]
 }
 
@@ -158,9 +249,9 @@ pub unsafe extern "C" fn wt_polar(
     reset_overflow();
     let p = std::slice::from_raw_parts(p, 24);
     let result = match mode {
-        0 => [cl(p, a), 0.],
-        1 => [cd(p, a), 0.],
-        _ => coefficients(p, a, angle, cl_add, cd_coeff),
+        0 => [cl::<true>(p, a), 0.],
+        1 => [cd::<true>(p, a), 0.],
+        _ => coefficients::<true>(p, a, angle, cl_add, cd_coeff),
     };
     std::ptr::copy_nonoverlapping(result.as_ptr(), out, 2);
     success()
@@ -179,7 +270,7 @@ pub unsafe extern "C" fn wt_polar_batch(
     let p = std::slice::from_raw_parts(p, 24);
     for i in 0..count {
         let row = std::slice::from_raw_parts(inputs.add(i * 4), 4);
-        let result = coefficients(p, row[0], row[1], row[2], row[3]);
+        let result = coefficients::<true>(p, row[0], row[1], row[2], row[3]);
         std::ptr::copy_nonoverlapping(result.as_ptr(), out.add(i * 2), 2);
     }
     success()
@@ -417,4 +508,37 @@ pub unsafe extern "C" fn wt_orientation(input: *const f64, out: *mut f64) -> u32
         std::ptr::copy_nonoverlapping(row.as_ptr(), out.add(12 + i * 4), 4);
     }
     1
+}
+
+/// Conservative bound for a check-free binary32 polar specialization. With
+/// |a|/|rotation| <=180, |parameters| <=1000, |maxDistAng| <=180,
+/// |added lift|/|drag multiplier| <=1000 and |force scales| <=1e5:
+/// the largest coefficient is bounded by 3.3e32 (the sole division uses a
+/// denominator >4e-19); rotated/scaled results stay below 3.3e37 < f32::MAX.
+/// All original rounding boundaries remain. Inputs outside this proof use the
+/// checked implementation, including overflow/fallback cases.
+pub(crate) fn bounded_polar_profile(p: &[f64]) -> bool {
+    p.iter().enumerate().all(|(i, v)| match i {
+        12..=14 => true,
+        21 | 22 => v.abs() <= 1e5,
+        _ => v.abs() <= 1000.,
+    }) && p[17].abs() <= 180.
+}
+pub(crate) fn bounded_polar(
+    p: &[f64],
+    a: f64,
+    angle: f64,
+    cl_add: f64,
+    cd_coeff: f64,
+    mode: u32,
+) -> Option<[f64; 2]> {
+    if !(a.abs() <= 180. && angle.abs() <= 180. && cl_add.abs() <= 1000. && cd_coeff.abs() <= 1000.)
+    {
+        return None;
+    }
+    Some(match mode {
+        0 => [cl::<false>(p, a), 0.],
+        1 => [cd::<false>(p, a), 0.],
+        _ => coefficients::<false>(p, a, angle, cl_add, cd_coeff),
+    })
 }
