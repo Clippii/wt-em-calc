@@ -107,12 +107,14 @@ unsafe fn owned(o: O) -> Option<Owned> {
         Some(Owned(o))
     }
 }
+#[inline(always)]
 unsafe fn key(s: O, i: usize) -> O {
     if fast_layout() {
         return *(*s.cast::<TupleObject>()).items.as_ptr().add(i);
     }
     api!(2, unsafe extern "C" fn(O, isize) -> O)(s, i as isize)
 }
+#[inline(always)]
 unsafe fn number(s: O, o: O) -> Option<f64> {
     if o.is_null() {
         return None;
@@ -130,6 +132,7 @@ unsafe fn number(s: O, o: O) -> Option<f64> {
         Some(v)
     }
 }
+#[inline(always)]
 unsafe fn dictionary(s: O, d: O) -> Option<()> {
     if fast_layout() {
         return if !d.is_null() && (*d.cast::<Header>()).kind == key(s, 51) {
@@ -145,6 +148,7 @@ unsafe fn dictionary(s: O, d: O) -> Option<()> {
     }
     Some(())
 }
+#[inline(always)]
 unsafe fn field(s: O, d: O, i: usize) -> Option<O> {
     let o = api!(5, unsafe extern "C" fn(O, O) -> O)(d, key(s, i));
     if o.is_null() {
@@ -153,9 +157,11 @@ unsafe fn field(s: O, d: O, i: usize) -> Option<O> {
         Some(o)
     }
 }
+#[inline(always)]
 unsafe fn scalar(s: O, d: O, i: usize) -> Option<f64> {
     number(s, field(s, d, i)?)
 }
+#[inline(always)]
 unsafe fn sequence(s: O, o: O, out: &mut [f64]) -> Option<()> {
     if o.is_null() {
         return None;
@@ -215,9 +221,11 @@ unsafe fn sequence(s: O, o: O, out: &mut [f64]) -> Option<()> {
     }
     Some(())
 }
+#[inline(always)]
 unsafe fn float(v: f64) -> Option<Owned> {
     owned(api!(10, unsafe extern "C" fn(f64) -> O)(v))
 }
+#[inline(always)]
 unsafe fn list(v: &[f64]) -> Option<Owned> {
     let result = owned(api!(11, unsafe extern "C" fn(isize) -> O)(v.len() as isize))?;
     for (i, x) in v.iter().enumerate() {
@@ -227,6 +235,7 @@ unsafe fn list(v: &[f64]) -> Option<Owned> {
     }
     Some(result)
 }
+#[inline(always)]
 unsafe fn set_new_item(list: O, index: isize, value: O) -> Option<()> {
     // Only used for fresh, private lists with a null slot at this valid index.
     // Equivalent to CPython's PyList_SET_ITEM; ownership is stolen once.
@@ -260,6 +269,7 @@ unsafe fn put_float(s: O, d: &Owned, name: &'static [u8], v: f64) -> Option<()> 
 unsafe fn put_list(s: O, d: &Owned, name: &'static [u8], v: &[f64]) -> Option<()> {
     put(s, d, name, list(v)?)
 }
+#[inline(always)]
 unsafe fn finish(s: O, result: Option<Owned>) -> O {
     let error = api!(4, unsafe extern "C" fn() -> O)();
     if error.is_null() {
@@ -346,6 +356,7 @@ unsafe fn polar_input(s: O, p: O) -> Option<[f64; 24]> {
     }
     Some(out)
 }
+#[inline(always)]
 unsafe fn polar_values(
     p: &[f64; 24],
     a: f64,
