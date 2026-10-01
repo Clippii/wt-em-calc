@@ -40,8 +40,9 @@ faster atmosphere evaluation, 2.8× faster moment assembly and 1.4× faster pola
 force calls. The optional batch API (`rust_backend.polar_batch`) evaluates a
 361-angle sweep about 8× faster, but is not yet used by the adaptive EM solver.
 A complete 10-second AIM-9L flight with Rust and the Python free wins improved
-from a median 0.616 s to 0.495 s across seven runs per backend (about 20% less
-runtime), with identical output. Rust alone initially reduced runtime about 5%.
+from a median 0.618 s to 0.494 s across seven runs per backend (about 20% less
+runtime), with identical output. The Python free wins alone reached 0.513 s;
+Rust alone initially reduced runtime about 5%.
 These compare against the Python path, not the existing Cython build; full EM
 diagram and altitude-job speedups have not been measured.
 
