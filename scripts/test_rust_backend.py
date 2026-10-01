@@ -16,6 +16,8 @@ import hashlib
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
+import copy
+from missile_copy import deepcopy as fast_copy
 
 import component_assembly as assembly
 import polar_f32 as polar
@@ -142,15 +144,34 @@ class Parity(unittest.TestCase):
                          launcher=dict(position=[0,5000,0],velocity=[300,0,0],angles=[0,0,0]),
                          target=dict(position=[4000,5000,100],velocity=[200,0,0],angles=[0,0,0]))
             outputs=[]
-            for mode in ('python', 'rust'):
-                env=dict(os.environ,WT_MISSILE_BACKEND='python',WT_NUMERIC_BACKEND=mode)
+            for mode in ('python', 'fast-python', 'rust'):
+                env=dict(os.environ,WT_MISSILE_BACKEND='python' if mode=='python' else 'auto',
+                         WT_NUMERIC_BACKEND='rust' if mode=='rust' else 'python')
                 run=subprocess.run([sys.executable,str(rust.ROOT/'scripts/missile_worker.py')],
                                    input=json.dumps(request),capture_output=True,text=True,env=env,timeout=60)
                 self.assertEqual(run.returncode,0,run.stdout+run.stderr)
                 output=json.loads(run.stdout.splitlines()[-1])
                 self.assertEqual(output['type'],'result',output)
                 outputs.append(output)
-            self.assertEqual(outputs[0],outputs[1],missile)
+            self.assertEqual(outputs[0],outputs[1],missile+' Python free wins')
+            self.assertEqual(outputs[0],outputs[2],missile+' Rust + free wins')
+
+    def test_snapshot_copy(self):
+        child=[1.,-0.,float('inf')]
+        source={'a':child,'b':child,'tuple':(child,)}
+        source['self']=source
+        result=fast_copy(source)
+        self.assertIs(result['self'],result)
+        self.assertIs(result['a'],result['b'])
+        self.assertIs(result['a'],result['tuple'][0])
+        self.assertIsNot(result['a'],child)
+        result['a'][0]=9.
+        self.assertEqual(child[0],1.)
+        class Custom:
+            def __deepcopy__(self,memo):return 'custom-copy'
+        self.assertEqual(fast_copy({'x':Custom()}),copy.deepcopy({'x':Custom()}))
+        class ListSubclass(list):pass
+        self.assertIsInstance(fast_copy(ListSubclass([child])),ListSubclass)
 
 
 def benchmark():
@@ -188,14 +209,15 @@ def flight_worker():
 
 def benchmark_flight():
     results=[]
-    for mode in ('python','rust'):
-        env=dict(os.environ,WT_MISSILE_BACKEND='python',WT_NUMERIC_BACKEND=mode)
+    for mode in ('python','fast-python','rust'):
+        env=dict(os.environ,WT_MISSILE_BACKEND='python' if mode=='python' else 'auto',
+                 WT_NUMERIC_BACKEND='rust' if mode=='rust' else 'python')
         run=subprocess.run([sys.executable,__file__,'--flight-worker'],env=env,
                            capture_output=True,text=True,check=True,timeout=120)
         result=json.loads(run.stdout);results.append(result)
         print(f"10-second AIM-9L flight, {mode}: median {result['median_s']:.6f} s (7 runs; excludes startup)")
-    if results[0]['digest']!=results[1]['digest']:raise AssertionError('Flight output changed')
-    print(f"Whole-flight speedup: {results[0]['median_s']/results[1]['median_s']:.3f}x; output matches exactly")
+    if any(result['digest']!=results[0]['digest'] for result in results):raise AssertionError('Flight output changed')
+    print(f"Whole-flight speedup: {results[0]['median_s']/results[-1]['median_s']:.3f}x; output matches exactly")
 
 
 if __name__ == '__main__':

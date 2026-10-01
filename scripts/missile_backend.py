@@ -81,18 +81,26 @@ def activate():
         return mode
     from rust_backend import load, atmosphere_function, orientation_function
     library = load(__file__)
-    if library is None:
-        return mode
+    replacements = {}
+    # The Cython build already includes its own faster memo-aware copier.
+    # Keep explicit python/reference selections available for comparison.
+    if mode != 'compiled' and os.environ.get('WT_MISSILE_BACKEND','auto') != 'python':
+        import copy
+        from missile_copy import deepcopy
+        replacements[copy.deepcopy] = deepcopy
     import kernels
     import body_integration
-    replacements = {kernels.atmosphere: atmosphere_function(library, kernels.atmosphere),
-                    body_integration.orientation: orientation_function(library, body_integration.orientation)}
+    if library is not None:
+        replacements.update({kernels.atmosphere: atmosphere_function(library, kernels.atmosphere),
+                             body_integration.orientation: orientation_function(library, body_integration.orientation)})
     scripts = Path(__file__).resolve().parent
     for module in list(sys.modules.values()):
         filename = getattr(module, '__file__', None)
         if not filename:
             continue
         path = Path(filename).resolve()
+        if path.stem == 'missile_copy':
+            continue
         if path.parent != scripts/'missile_model' and path.parent != scripts:
             continue
         for key, value in list(vars(module).items()):
