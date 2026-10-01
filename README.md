@@ -14,14 +14,16 @@ The missile solver uses optimized state handling and optional compiled helpers w
 
 Optional Rust kernels accelerate aerodynamic polars, aircraft force/moment
 assembly, complete missile aerodynamic forces, body integration, controller
-quaternion search, propulsion/seeker vector transforms and atmosphere.
+quaternion search, acceleration-controller and shared-seeker blocks,
+propulsion/seeker vector transforms and atmosphere.
 With Rust/Cargo installed, build them using `python scripts/build_rust_backend.py`.
 The library has no Python ABI dependency and no third-party Rust dependencies.
 Docker builds include it; source and Windows installations can build it locally.
 
 `WT_NUMERIC_BACKEND=auto` (the default) uses a verified local library for Python
 kernels and missile arithmetic, while keeping the existing Cython EM kernels
-preferred. Missing or stale Rust builds fall back automatically.
+and compiled missile vector transforms preferred. Missing or stale Rust builds
+fall back automatically.
 `WT_NUMERIC_BACKEND=python` disables Rust; `WT_NUMERIC_BACKEND=rust` requires the
 library and also opts compiled EM modules into Rust calls. Selecting
 `WT_MISSILE_BACKEND=reference` bypasses all missile acceleration.
@@ -37,25 +39,28 @@ for comparison; `reference` retains the original sessions. Compiled missile
 builds keep their existing Cython copier and validator.
 
 Run `python scripts/test_rust_backend.py --benchmark --benchmark-flight` to check
-exact reference parity and measure costs including Python marshalling. The
-complete 10-second AIM-9L benchmark now takes about 0.26 s versus 0.62 s for the
-original Python path: about 2.4x faster, with identical full-result hashes.
-The previous Rust version took about 0.30 s; the latest vector, integration and
-validation changes remove another 15% of runtime. Timings exclude interpreter
-startup and use medians of seven runs per configuration, on a Ryzen 9 9950X3D
-with Python 3.12.14 and Rust 1.98.1 on Windows x64.
+exact reference parity and measure costs including Python marshalling. A
+complete 10-second AIM-9L benchmark measured 0.243 s versus 0.639 s for the
+original Python path: 2.63x faster, with identical full-result hashes. Timings
+exclude interpreter startup and use medians of seven runs per configuration,
+on a Ryzen 9 9950X3D with Python 3.12.14 and Rust 1.98.1 on Windows x64.
 
-These Windows measurements compare against the Python path. A separate Linux
-runner comparison with Python 3.11 and the pinned Cython 3.1.4 found Cython
-alone at 0.299 s, standalone Rust at 0.537 s, and the default Cython + Rust
-combination at 0.285 s (about 4.7% faster than Cython). All outputs matched.
-Cython outperformed Rust's ctypes calls for individual EM kernels, so auto
-mode keeps compiled EM kernels preferred. Reproduce the matched comparison with
-`python scripts/test_rust_backend.py --benchmark-cython` after building both
-Cython backends and Rust. Full EM
-diagram and altitude-job speedups have not been measured. The optional batch API
-(`rust_backend.polar_batch`) accelerates a 361-angle sweep about 8x, but is not
-yet used by the adaptive EM solver. Kernel timings are not whole-app speedups.
+A separate matched Linux runner comparison with Python 3.11 and Cython 3.1.4
+measured AIM-9L at 0.294611 s with Cython alone, 0.526804 s with Rust without
+Cython, and 0.273533 s with the tuned default Cython + Rust combination:
+7.2% less runtime than Cython alone. R-73 measured 7.6% less runtime; AIM-7F
+was effectively tied (0.433351 s versus 0.431642 s, within run variation).
+All backends produced identical full-result hashes for each scenario.
+Standalone Rust was slower than Cython. Auto mode retains faster compiled EM
+kernels and compiled missile vector transforms rather than replacing every
+helper. Windows and Linux absolute timings are not directly comparable.
+Reproduce the matched comparison with
+`python scripts/test_rust_backend.py --benchmark-cython --benchmark-ablation`
+after building both Cython backends and Rust. See the
+[benchmark and parity run](https://github.com/Clippii/wt-em-calc/actions/runs/36811971592).
+Full EM diagram and altitude-job speedups have not been measured. The optional
+batch API (`rust_backend.polar_batch`) is not yet used by the adaptive EM solver.
+Kernel timings are not whole-app speedups.
 
 For Windows 10/11 x64:
 
