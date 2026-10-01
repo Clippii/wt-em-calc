@@ -141,6 +141,23 @@ unsafe fn number(s: O, o: O) -> Option<f64> {
     }
 }
 #[inline(always)]
+unsafe fn plain_number(s: O, o: O) -> Option<f64> {
+    let typ = if fast_layout() {
+        None
+    } else {
+        Some(owned(api!(18, unsafe extern "C" fn(O) -> O)(o))?)
+    };
+    let kind = if let Some(ref typ) = typ {
+        typ.0
+    } else {
+        (*o.cast::<Header>()).kind
+    };
+    if kind != key(s, 53) && kind != key(s, 54) && kind != key(s, 56) {
+        return None;
+    }
+    number(s, o)
+}
+#[inline(always)]
 unsafe fn dictionary(s: O, d: O) -> Option<()> {
     if fast_layout() {
         return if !d.is_null() && (*d.cast::<Header>()).kind == key(s, 51) {
@@ -1517,10 +1534,14 @@ unsafe fn bound_call(self_: O, argv: *const O, n: isize, keywords: O, kind: u32)
                     finish(
                         s,
                         (|| {
-                            let angle = number(s, a[1])?;
-                            let rotation = if kind == 4 { number(s, a[2])? } else { 0. };
-                            let added = if n > 3 { number(s, a[3])? } else { 0. };
-                            let drag = if n > 4 { number(s, a[4])? } else { 1. };
+                            let angle = plain_number(s, a[1])?;
+                            let rotation = if kind == 4 {
+                                plain_number(s, a[2])?
+                            } else {
+                                0.
+                            };
+                            let added = if n > 3 { plain_number(s, a[3])? } else { 0. };
+                            let drag = if n > 4 { plain_number(s, a[4])? } else { 1. };
                             let mut r = [0.; 2];
                             let mode = if kind == 2 {
                                 0

@@ -356,8 +356,8 @@ class Parity(unittest.TestCase):
         for n in range(24):
             # Alternate cache hits with changes to constants used by prepared
             # post-stall branches, including positive and negative sides.
-            p.update(maxDistAng=40.+n,clAfterCritHigh=.1+n/12,
-                     clAfterCritLow=-.2-n/15,clDeclCoeff=.001+n/5000)
+            p.update(maxDistAng=40.+n,clAfterCritH=.1+n/12,
+                     clAfterCritL=-.2-n/15,declineCoeff=.001+n/5000)
             for a in [-180.,-140.,-90.,-40.,-21.,-14.,0.,16.,21.,40.,90.,140.,180.]+[rng.uniform(-180,180) for _ in range(30)]:
                 args=(a,rng.uniform(-180,180),.2,.9)
                 for _ in range(2):
@@ -381,6 +381,14 @@ class Parity(unittest.TestCase):
         p['cyMult']=FloatOnly()
         for fn in (polar.calc_c,REF_POLAR.calc_c):
             with self.assertRaises(TypeError):fn(p,5.,12.,.2,.9)
+        p=dict(POLAR)
+        class ChangingAngle:
+            def __init__(self):self.value=5.
+            def __float__(self):
+                self.value+=1.
+                return self.value
+        self.assertEqual(polar.calc_c(p,ChangingAngle(),12.,.2,.9),
+                         REF_POLAR.calc_c(p,ChangingAngle(),12.,.2,.9))
 
     def test_bound_keywords_and_arity(self):
         if not self.library._python:self.skipTest('Direct builtins unavailable')
