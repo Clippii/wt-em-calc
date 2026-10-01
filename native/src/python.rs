@@ -589,21 +589,26 @@ unsafe fn plain_graph(
     if atomic(s, typ.0) {
         return Some(true);
     }
-    if typ.0 != key(s, 49) && typ.0 != key(s, 51) {
+    if typ.0 != key(s, 49) && typ.0 != key(s, 50) && typ.0 != key(s, 51) {
         return Some(false);
     }
     if !seen.insert(o as usize) {
         return Some(true);
     }
-    if typ.0 == key(s, 49) {
-        let n = api!(6, unsafe extern "C" fn(O) -> isize)(o);
+    if typ.0 == key(s, 49) || typ.0 == key(s, 50) {
+        let is_list = typ.0 == key(s, 49);
+        let n = if is_list {
+            api!(6, unsafe extern "C" fn(O) -> isize)(o)
+        } else {
+            api!(9, unsafe extern "C" fn(O) -> isize)(o)
+        };
+        let get: unsafe extern "C" fn(O, isize) -> O = if is_list {
+            api!(7, unsafe extern "C" fn(O, isize) -> O)
+        } else {
+            api!(2, unsafe extern "C" fn(O, isize) -> O)
+        };
         for i in 0..n {
-            if !plain_graph(
-                s,
-                api!(7, unsafe extern "C" fn(O, isize) -> O)(o, i),
-                seen,
-                depth + 1,
-            )? {
+            if !plain_graph(s, get(o, i), seen, depth + 1)? {
                 return Some(false);
             }
         }
@@ -638,6 +643,43 @@ unsafe fn clone_graph(s: O, o: O, memo: O) -> Option<Owned> {
     if !existing.is_null() {
         inc(existing);
         return Some(Owned(existing));
+    }
+    if typ.0 == key(s, 50) {
+        let size = api!(9, unsafe extern "C" fn(O) -> isize)(o);
+        let mut children = Vec::with_capacity(size as usize);
+        let mut unchanged = true;
+        for i in 0..size {
+            let item = api!(2, unsafe extern "C" fn(O, isize) -> O)(o, i);
+            let child = clone_graph(s, item, memo)?;
+            unchanged &= child.0 == item;
+            children.push(child);
+        }
+        // A tuple/list cycle can memoize this tuple while copying its children.
+        let existing = api!(5, unsafe extern "C" fn(O, O) -> O)(memo, id.0);
+        if !existing.is_null() {
+            inc(existing);
+            return Some(Owned(existing));
+        }
+        if unchanged {
+            inc(o);
+            return Some(Owned(o));
+        }
+        let result = owned(api!(19, unsafe extern "C" fn(isize) -> O)(size))?;
+        for (i, child) in children.into_iter().enumerate() {
+            if api!(20, unsafe extern "C" fn(O, isize, O) -> i32)(
+                result.0,
+                i as isize,
+                child.take(),
+            ) < 0
+            {
+                return None;
+            }
+        }
+        if api!(23, unsafe extern "C" fn(O, O, O) -> i32)(memo, id.0, result.0) < 0 {
+            return None;
+        }
+        keep_alive(o, memo)?;
+        return Some(result);
     }
     let is_list = typ.0 == key(s, 49);
     let size = if is_list {
@@ -679,6 +721,10 @@ unsafe fn clone_graph(s: O, o: O, memo: O) -> Option<Owned> {
             }
         }
     }
+    keep_alive(o, memo)?;
+    Some(result)
+}
+unsafe fn keep_alive(o: O, memo: O) -> Option<()> {
     // Match copy._keep_alive: retain source containers while the memo survives.
     let memo_id = identity(memo)?;
     let mut keeper = api!(5, unsafe extern "C" fn(O, O) -> O)(memo, memo_id.0);
@@ -693,14 +739,14 @@ unsafe fn clone_graph(s: O, o: O, memo: O) -> Option<Owned> {
     if api!(24, unsafe extern "C" fn(O, O) -> i32)(keeper, o) < 0 {
         return None;
     }
-    Some(result)
+    Some(())
 }
 unsafe extern "C" fn deepcopy(s: O, a: *const O, n: isize) -> O {
     let Some(a) = args(a, n, 2) else {
         return scalar_fallback(key(s, 59), all_args(a, n));
     };
     let result = (|| {
-        // Custom objects, subclasses and tuples delegate as a whole graph. This
+        // Custom objects and subclasses delegate as a whole graph. This
         // prevents custom callbacks from mutating a dictionary during PyDict_Next.
         let mut seen = std::collections::HashSet::new();
         if !plain_graph(s, a[0], &mut seen, 0)? || seen.contains(&(a[1] as usize)) {

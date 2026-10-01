@@ -396,6 +396,16 @@ class Parity(unittest.TestCase):
         source={'a':child,'tuple':(child,)}
         result=native(source)
         self.assertIs(result['a'],result['tuple'][0])
+        immutable=(1.,'a',None)
+        self.assertIs(native(immutable),immutable)
+        child=[]
+        cyclic=(child,)
+        child.append(cyclic)
+        cloned=native(cyclic)
+        self.assertIs(cloned[0][0],cloned)
+        self.assertIsNot(cloned[0],child)
+        paired=native({'x':cyclic,'y':cyclic})
+        self.assertIs(paired['x'],paired['y'])
         counts=[sys.getrefcount(x) for x in (source,child)]
         for _ in range(1000):native(source)
         self.assertEqual(counts,[sys.getrefcount(x) for x in (source,child)])
