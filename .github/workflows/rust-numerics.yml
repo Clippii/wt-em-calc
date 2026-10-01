@@ -25,7 +25,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m pip install Cython setuptools
+      - run: python -m pip install Cython==3.1.4 setuptools==82.0.1
       - run: python scripts/build_rust_backend.py
       - run: python scripts/build_missile_backend.py
       - run: python scripts/build_em_backend.py
@@ -33,3 +33,4 @@ jobs:
         env:
           WT_NUMERIC_BACKEND: rust
         run: python scripts/test_rust_backend.py --benchmark-cython
+
