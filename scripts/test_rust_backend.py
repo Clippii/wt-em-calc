@@ -432,8 +432,8 @@ def em_cython_worker():
     packed_moment=[x for name in assembly.NAMES for x in forces[name]]+[x for name in assembly.NAMES for x in positions[name]]+cog
     groups={
         'polar':(lambda:REF_POLAR.calc_c(POLAR,37.,12.,.2,.9),lambda:polar.calc_c(POLAR,37.,12.,.2,.9),lambda:rust.polar(library,POLAR,37.,12.,.2,.9)),
-        'force':(lambda:REF_ASSEMBLY.assemble_force(forces),lambda:assembly.assemble_force(forces),lambda:rust.assembly(library,packed_force)),
-        'moment':(lambda:REF_ASSEMBLY.assemble_moment(forces,positions,cog),lambda:assembly.assemble_moment(forces,positions,cog),lambda:rust.assembly(library,packed_moment,moment=True))}
+        'force':(lambda:REF_ASSEMBLY.assemble_force(forces),lambda:assembly.assemble_force(forces),lambda:rust.assembly(library,(x for name in (*assembly.NAMES,'parasite') for x in forces[name]))),
+        'moment':(lambda:REF_ASSEMBLY.assemble_moment(forces,positions,cog),lambda:assembly.assemble_moment(forces,positions,cog),lambda:rust.assembly(library,[x for name in assembly.NAMES for x in forces[name]]+[x for name in assembly.NAMES for x in positions[name]]+cog,moment=True))}
     assert Path(assembly.__file__).suffix in ('.so','.pyd'),assembly.__file__
     result={}
     for name,functions in groups.items():
