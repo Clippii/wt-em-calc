@@ -109,7 +109,8 @@ def _python_interface(library):
              'PyErr_Occurred', 'PyDict_GetItemWithError', 'PyList_Size',
              'PyList_GetItem', 'PyErr_Clear', 'PyTuple_Size', 'PyFloat_FromDouble',
              'PyList_New', 'PyList_SetItem', 'PyDict_New', 'PyDict_SetItemString',
-             'PyLong_FromLongLong', 'PyCFunction_NewEx', 'PyErr_ExceptionMatches', 'PyObject_Type')
+             'PyLong_FromLongLong', 'PyCFunction_NewEx', 'PyErr_ExceptionMatches', 'PyObject_Type',
+             'PyTuple_New','PyTuple_SetItem','PyObject_CallObject')
     addresses = (ctypes.c_size_t * len(names))(*(ctypes.cast(getattr(ctypes.pythonapi,name),ctypes.c_void_p).value for name in names))
     keys = (*FIELDS, 'left_wing','right_wing','left_hstab','right_hstab','vstab','fuselage','chute','parasite',
             'position','velocity','omega','quaternion','time','clocks','distance','water_distance','water')
@@ -118,6 +119,14 @@ def _python_interface(library):
     # when converting a py_object function result (do not decrement it again).
     initialize = ctypes.PYFUNCTYPE(ctypes.py_object,ctypes.POINTER(ctypes.c_size_t),ctypes.c_size_t,ctypes.py_object)(('wt_python_init',library))
     return initialize(addresses,len(names),context)
+
+
+def scalar_functions(library, references):
+    """Bind masked binary32 missile operations; invalid inputs call the reference."""
+    if not library._python:
+        return references
+    bind=ctypes.PYFUNCTYPE(ctypes.py_object,ctypes.c_uint32,ctypes.py_object)(('wt_python_scalar',library))
+    return tuple(bind(i,(reference,library)) for i,reference in enumerate(references))
 
 
 def _array(values):

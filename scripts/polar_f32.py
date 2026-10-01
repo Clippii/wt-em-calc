@@ -3,6 +3,7 @@ from component_assembly import f32,add,sub,mul
 from rust_backend import load as _load_rust, polar as _rust_polar
 
 _rust = _load_rust(__file__)
+_native_polar = _rust._python.get('polar') if _rust is not None else None
 
 
 def sin(x):return f32(math.sin(x))
@@ -11,7 +12,7 @@ def div(a,b):return f32(a/b)
 
 def calc_cl(p,a):
     if _rust is not None:
-        result = _rust_polar(_rust,p,a,mode=0)
+        result = _native_polar(p,a,0.,0.,1.,0) if _native_polar is not None else _rust_polar(_rust,p,a,mode=0)
         if result is not None:return result[0]
     a=f32(a)
     if p['aoaLineL']<=a<=p['aoaLineH']:
@@ -48,7 +49,7 @@ def calc_cl(p,a):
 
 def calc_cd(p,a):
     if _rust is not None:
-        result = _rust_polar(_rust,p,a,mode=1)
+        result = _native_polar(p,a,0.,0.,1.,1) if _native_polar is not None else _rust_polar(_rust,p,a,mode=1)
         if result is not None:return result[0]
     a=f32(a);line=add(mul(p['clLineCoeff'],a),p['cl0'])
     delta=sub(a,p['aoaCritH' if a>=0. else 'aoaCritL'])
@@ -60,7 +61,7 @@ def calc_cd(p,a):
 
 def calc_c(p,a,angle,cl_add=0.,cd_coeff=1.):
     if _rust is not None:
-        result = _rust_polar(_rust,p,a,angle,cl_add,cd_coeff)
+        result = _native_polar(p,a,angle,cl_add,cd_coeff,2) if _native_polar is not None else _rust_polar(_rust,p,a,angle,cl_add,cd_coeff)
         if result is not None:return result
     cd=mul(calc_cd(p,a),f32(cd_coeff));cl=add(calc_cl(p,a),f32(cl_add))
     radians=mul(f32(angle),f32(.01745329238474369));sn=sin(radians);cs=f32(math.cos(radians))

@@ -7,7 +7,7 @@ use std::ffi::{c_char, c_void};
 use std::ptr;
 use std::sync::OnceLock;
 type O = *mut c_void;
-static API: OnceLock<[usize; 19]> = OnceLock::new();
+static API: OnceLock<[usize; 22]> = OnceLock::new();
 macro_rules! api {
     ($i:expr, $t:ty) => {
         std::mem::transmute::<usize, $t>(API.get().unwrap()[$i])
@@ -165,6 +165,11 @@ unsafe fn polar_input(s: O, p: O) -> Option<[f64; 24]> {
     dictionary(s, p)?;
     let mut out = [0.; 24];
     for (i, v) in out.iter_mut().enumerate() {
+        // Aerodynamic-center and pitching-moment fields are unused by the
+        // lift/drag kernels; the reference never reads them either.
+        if (12..15).contains(&i) {
+            continue;
+        }
         *v = scalar(s, p, i)?;
     }
     Some(out)
@@ -496,12 +501,88 @@ static METHODS: [Method; 10] = [
     method!("matrix", matrix),
     method!("integrate", integrate),
 ];
+
+unsafe fn scalar_fallback(reference: O, values: &[O]) -> O {
+    api!(8, unsafe extern "C" fn())();
+    let Some(tuple) = owned(api!(19, unsafe extern "C" fn(isize) -> O)(
+        values.len() as isize
+    )) else {
+        return ptr::null_mut();
+    };
+    for (i, o) in values.iter().enumerate() {
+        inc(*o);
+        if api!(20, unsafe extern "C" fn(O, isize, O) -> i32)(tuple.0, i as isize, *o) < 0 {
+            return ptr::null_mut();
+        }
+    }
+    api!(21, unsafe extern "C" fn(O, O) -> O)(reference, tuple.0)
+}
+unsafe fn scalar_call(s: O, a: *const O, n: isize, op: u32) -> O {
+    let reference = key(s, 0);
+    let values = std::slice::from_raw_parts(a, n as usize);
+    if n != if op == 0 { 1 } else { 2 } {
+        return scalar_fallback(reference, values);
+    }
+    let x = api!(3, unsafe extern "C" fn(O) -> f64)(values[0]);
+    let x = (x as f32) as f64;
+    let result = if op == 0 {
+        x
+    } else {
+        let y = (api!(3, unsafe extern "C" fn(O) -> f64)(values[1]) as f32) as f64;
+        match op {
+            1 => x + y,
+            2 => x - y,
+            3 => x * y,
+            _ => {
+                if y == 0. {
+                    return scalar_fallback(reference, values);
+                }
+                x / y
+            }
+        }
+    };
+    if !api!(4, unsafe extern "C" fn() -> O)().is_null() {
+        return scalar_fallback(reference, values);
+    }
+    api!(10, unsafe extern "C" fn(f64) -> O)((result as f32) as f64)
+}
+macro_rules! scalar_method {
+    ($f:ident,$op:literal) => {
+        unsafe extern "C" fn $f(s: O, a: *const O, n: isize) -> O {
+            scalar_call(s, a, n, $op)
+        }
+    };
+}
+scalar_method!(f32, 0);
+scalar_method!(add, 1);
+scalar_method!(sub, 2);
+scalar_method!(mul, 3);
+scalar_method!(div, 4);
+static SCALARS: [Method; 5] = [
+    method!("f32", f32),
+    method!("add", add),
+    method!("sub", sub),
+    method!("mul", mul),
+    method!("div", div),
+];
+/// context owns (reference callable, library), retaining both for every builtin.
 #[no_mangle]
-pub unsafe extern "C" fn wt_python_init(addresses: *const usize, len: usize, context: O) -> O {
-    if len != 19 || context.is_null() {
+pub unsafe extern "C" fn wt_python_scalar(index: u32, context: O) -> O {
+    if index >= 5 || API.get().is_none() || context.is_null() {
         return ptr::null_mut();
     }
-    let table: [usize; 19] = std::slice::from_raw_parts(addresses, 19)
+    api!(16, unsafe extern "C" fn(*const Method, O, O) -> O)(
+        &SCALARS[index as usize],
+        context,
+        ptr::null_mut(),
+    )
+}
+#[no_mangle]
+pub unsafe extern "C" fn wt_python_init(addresses: *const usize, len: usize, context: O) -> O {
+    if len != 22 || context.is_null() {
+        return ptr::null_mut();
+    }
+    let table: [usize; 22] = std::slice::from_raw_parts(addresses, 22)
         .try_into()
         .unwrap();
     if table.contains(&0) {

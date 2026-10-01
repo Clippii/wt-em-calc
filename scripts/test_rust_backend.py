@@ -258,6 +258,26 @@ class Parity(unittest.TestCase):
         p['cl0']+=.25
         self.assertNotEqual(native['polar'](p,37.,12.,.2,.9,2),portable)
 
+    def test_direct_missile_scalars(self):
+        refs=tuple(getattr(kernels,name) for name in ('f32','add','sub','mul','div'))
+        native=rust.scalar_functions(self.library,refs)
+        rng=random.Random(1854)
+        special=[0.,-0.,1.,-1.,2**-150,2**-149,2**-126,3.4028234663852886e38,1e100,-1e100,float('inf'),float('-inf'),float('nan')]
+        numbers=special+[rng.uniform(-1e20,1e20) for _ in range(1000)]
+        for x in numbers:self.exact(native[0](x),refs[0](x))
+        for i in range(1,5):
+            for x in numbers:
+                y=rng.choice(numbers)
+                try:expected=refs[i](x,y)
+                except ZeroDivisionError:
+                    with self.assertRaisesRegex(ZeroDivisionError,'float division by zero'):native[i](x,y)
+                else:self.exact(native[i](x,y),expected)
+        for i in range(5):
+            args=(object(),) if i==0 else (object(),1.)
+            try:refs[i](*args)
+            except Exception as error:
+                with self.assertRaises(type(error)):native[i](*args)
+
     def test_mutated_polar(self):
         p=dict(POLAR)
         polar.calc_c(p,12.,4.)
@@ -515,6 +535,7 @@ def em_cython_worker():
     os.environ['WT_NUMERIC_BACKEND']='rust'
     library=rust.load(__file__)
     native_assembly=reference('component_assembly');native_assembly._rust=library
+    native_polar=reference('polar_f32');native_polar._rust=library
     forces={name:[1e4,-2e4,3e4] for name in (*assembly.NAMES,'parasite')}
     positions={name:[1.,-2.,3.] for name in assembly.NAMES};cog=[0.,0.,0.]
     packed_force=[x for name in (*assembly.NAMES,'parasite') for x in forces[name]]
@@ -522,7 +543,7 @@ def em_cython_worker():
     rows=[(a,a/2,.2,.9) for a in range(-180,181)]
     groups={
         'sweep':(lambda:[REF_POLAR.calc_c(POLAR,*row) for row in rows],lambda:[polar.calc_c(POLAR,*row) for row in rows],lambda:rust.polar_batch(POLAR,rows)),
-        'polar':(lambda:REF_POLAR.calc_c(POLAR,37.,12.,.2,.9),lambda:polar.calc_c(POLAR,37.,12.,.2,.9),lambda:rust.polar(library,POLAR,37.,12.,.2,.9)),
+        'polar':(lambda:REF_POLAR.calc_c(POLAR,37.,12.,.2,.9),lambda:polar.calc_c(POLAR,37.,12.,.2,.9),lambda:native_polar.calc_c(POLAR,37.,12.,.2,.9)),
         'force':(lambda:REF_ASSEMBLY.assemble_force(forces),lambda:assembly.assemble_force(forces),lambda:native_assembly.assemble_force(forces)),
         'moment':(lambda:REF_ASSEMBLY.assemble_moment(forces,positions,cog),lambda:assembly.assemble_moment(forces,positions,cog),lambda:native_assembly.assemble_moment(forces,positions,cog))}
     assert Path(assembly.__file__).suffix in ('.so','.pyd'),assembly.__file__
