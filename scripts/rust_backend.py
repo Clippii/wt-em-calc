@@ -123,8 +123,50 @@ def _python_interface(library):
                float,int,str,bool,bytes,type(None),deepcopy,True,False,*map(sys.intern,field_names))
     # PYFUNCTYPE retains the GIL. ctypes consumes the returned new reference
     # when converting a py_object function result (do not decrement it again).
-    initialize = ctypes.PYFUNCTYPE(ctypes.py_object,ctypes.POINTER(ctypes.c_size_t),ctypes.c_size_t,ctypes.py_object)(('wt_python_init',library))
-    return initialize(addresses,len(names),context)
+    initialize = ctypes.PYFUNCTYPE(ctypes.py_object,ctypes.POINTER(ctypes.c_size_t),ctypes.c_size_t,ctypes.py_object,ctypes.c_uint32)(('wt_python_init',library))
+    return initialize(addresses,len(names),context,_fast_layout_available())
+
+
+def _fast_layout_available():
+    """Probe the explicitly supported CPython layouts; never guess future ABIs.
+
+    Header declarations: CPython 3.11/3.12 Include/cpython/{list,tuple,float,dict}object.h.
+    Stable-ABI builtins remain the fallback, including for trace-ref/debug layouts.
+    """
+    if os.environ.get('WT_RUST_INTERFACE')=='stable' or sys.version_info[:2] not in ((3,11),(3,12)) or hasattr(sys,'getobjects') or ctypes.sizeof(ctypes.c_void_p)!=8:
+        return False
+    class Head(ctypes.Structure):
+        _fields_=[('refs',ctypes.c_ssize_t),('kind',ctypes.c_void_p)]
+    class Var(ctypes.Structure):
+        _fields_=[('head',Head),('size',ctypes.c_ssize_t)]
+    class Float(ctypes.Structure):
+        _fields_=[('head',Head),('value',ctypes.c_double)]
+    class List(ctypes.Structure):
+        _fields_=[('base',Var),('items',ctypes.POINTER(ctypes.c_void_p)),('allocated',ctypes.c_ssize_t)]
+    class Dict(ctypes.Structure):
+        _fields_=[('head',Head),('used',ctypes.c_ssize_t),('version',ctypes.c_uint64)]
+    value=42.25
+    if Head.from_address(id(value)).kind!=id(float) or Float.from_address(id(value)).value!=value:
+        return False
+    items=[value,None,True]
+    raw=List.from_address(id(items))
+    if raw.base.head.kind!=id(list) or raw.base.size!=len(items) or not raw.items:
+        return False
+    if list(raw.items[:len(items)])!=list(map(id,items)):
+        return False
+    row=tuple(items)
+    if Var.from_address(id(row)).head.kind!=id(tuple) or Var.from_address(id(row)).size!=len(row):
+        return False
+    raw_items=ctypes.cast(id(row)+ctypes.sizeof(Var),ctypes.POINTER(ctypes.c_void_p))
+    if list(raw_items[:len(row)])!=list(map(id,row)):
+        return False
+    mapping={'probe':value}
+    raw_dict=Dict.from_address(id(mapping))
+    if raw_dict.head.kind!=id(dict) or raw_dict.used!=len(mapping):
+        return False
+    version=raw_dict.version
+    mapping['probe']=value+1
+    return version!=0 and raw_dict.version!=version
 
 
 def scalar_functions(library, references):

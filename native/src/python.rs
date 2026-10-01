@@ -1,13 +1,64 @@
-//! Direct CPython builtins over the same audited kernels. Only public Stable ABI
-//! functions are used; addresses are supplied by the running interpreter, so the
+//! Direct CPython builtins over the same audited kernels. Public Stable ABI
+//! functions provide the portable path. A probed CPython 3.11/3.12 path also reads
+//! their documented object layouts; future ABIs never enable these reads.
+//! Function addresses are supplied by the running interpreter, so the
 //! portable cdylib does not link a particular libpython. Callbacks always retain
 //! the GIL. Their self tuple owns all interned keys (no global Python objects).
 //! Unsupported inputs return None for the existing reference fallback.
+use std::cell::RefCell;
 use std::ffi::{c_char, c_void};
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 type O = *mut c_void;
 static API: OnceLock<[usize; 27]> = OnceLock::new();
+static FAST_LAYOUT: AtomicBool = AtomicBool::new(false);
+// Optional CPython 3.11/3.12 fast path, matching their public cpython headers.
+// Python probes every layout before enabling it. Other runtimes use Stable ABI.
+#[repr(C)]
+struct Header {
+    references: isize,
+    kind: O,
+}
+#[repr(C)]
+struct VarObject {
+    header: Header,
+    size: isize,
+}
+#[repr(C)]
+struct FloatObject {
+    header: Header,
+    value: f64,
+}
+#[repr(C)]
+struct ListObject {
+    base: VarObject,
+    items: *const O,
+    allocated: isize,
+}
+#[repr(C)]
+struct TupleObject {
+    base: VarObject,
+    items: [O; 0],
+}
+#[repr(C)]
+struct DictObject {
+    header: Header,
+    used: isize,
+    version: u64,
+}
+#[derive(Clone, Copy)]
+struct ProfileCache {
+    context: usize,
+    identity: usize,
+    version: u64,
+    values: [f64; 24],
+}
+thread_local! {static PROFILE:RefCell<ProfileCache>=RefCell::new(ProfileCache{context:0,identity:0,version:0,values:[0.;24]});}
+#[inline]
+fn fast_layout() -> bool {
+    FAST_LAYOUT.load(Ordering::Relaxed)
+}
 macro_rules! api {
     ($i:expr, $t:ty) => {
         std::mem::transmute::<usize, $t>(API.get().unwrap()[$i])
@@ -40,13 +91,20 @@ unsafe fn owned(o: O) -> Option<Owned> {
     }
 }
 unsafe fn key(s: O, i: usize) -> O {
+    if fast_layout() {
+        return *(*s.cast::<TupleObject>()).items.as_ptr().add(i);
+    }
     api!(2, unsafe extern "C" fn(O, isize) -> O)(s, i as isize)
 }
-unsafe fn number(o: O) -> Option<f64> {
+unsafe fn number(s: O, o: O) -> Option<f64> {
     if o.is_null() {
         return None;
     }
-    let v = api!(3, unsafe extern "C" fn(O) -> f64)(o);
+    let v = if fast_layout() && (*o.cast::<Header>()).kind == key(s, 53) {
+        (*o.cast::<FloatObject>()).value
+    } else {
+        api!(3, unsafe extern "C" fn(O) -> f64)(o)
+    };
     // Check conversion errors once at the callback boundary, rather than after
     // every scalar. A pending error always discards the computed result.
     if !v.is_finite() || v.abs() > f32::MAX as f64 {
@@ -56,6 +114,13 @@ unsafe fn number(o: O) -> Option<f64> {
     }
 }
 unsafe fn dictionary(s: O, d: O) -> Option<()> {
+    if fast_layout() {
+        return if !d.is_null() && (*d.cast::<Header>()).kind == key(s, 51) {
+            Some(())
+        } else {
+            None
+        };
+    }
     // A dict subclass can override __getitem__; preserve its Python behavior.
     let typ = owned(api!(18, unsafe extern "C" fn(O) -> O)(d))?;
     if typ.0 != key(s, 51) {
@@ -72,11 +137,29 @@ unsafe fn field(s: O, d: O, i: usize) -> Option<O> {
     }
 }
 unsafe fn scalar(s: O, d: O, i: usize) -> Option<f64> {
-    number(field(s, d, i)?)
+    number(s, field(s, d, i)?)
 }
 unsafe fn sequence(s: O, o: O, out: &mut [f64]) -> Option<()> {
     if o.is_null() {
         return None;
+    }
+    if fast_layout() {
+        let kind = (*o.cast::<Header>()).kind;
+        if kind != key(s, 49) && kind != key(s, 50) {
+            return None;
+        }
+        if (*o.cast::<VarObject>()).size != out.len() as isize {
+            return None;
+        }
+        let items = if kind == key(s, 49) {
+            (*o.cast::<ListObject>()).items
+        } else {
+            (*o.cast::<TupleObject>()).items.as_ptr()
+        };
+        for (i, v) in out.iter_mut().enumerate() {
+            *v = number(s, *items.add(i))?;
+        }
+        return Some(());
     }
     let typ = owned(api!(18, unsafe extern "C" fn(O) -> O)(o))?;
     if typ.0 != key(s, 49) && typ.0 != key(s, 50) {
@@ -101,7 +184,7 @@ unsafe fn sequence(s: O, o: O, out: &mut [f64]) -> Option<()> {
         return None;
     }
     for (i, v) in out.iter_mut().enumerate() {
-        *v = number(get(o, i as isize))?;
+        *v = number(s, get(o, i as isize))?;
     }
     Some(())
 }
@@ -169,14 +252,47 @@ unsafe fn all_args<'a>(values: *const O, n: isize) -> &'a [O] {
 }
 unsafe fn polar_input(s: O, p: O) -> Option<[f64; 24]> {
     dictionary(s, p)?;
+    let version = if fast_layout() {
+        (*p.cast::<DictObject>()).version
+    } else {
+        0
+    };
+    if version != 0 {
+        if let Some(values) = PROFILE.with(|cache| {
+            let c = cache.borrow();
+            if c.context == s as usize && c.identity == p as usize && c.version == version {
+                Some(c.values)
+            } else {
+                None
+            }
+        }) {
+            return Some(values);
+        }
+    }
     let mut out = [0.; 24];
+    let mut cacheable = version != 0;
     for (i, v) in out.iter_mut().enumerate() {
         // Aerodynamic-center and pitching-moment fields are unused by the
         // lift/drag kernels; the reference never reads them either.
         if (12..15).contains(&i) {
             continue;
         }
-        *v = scalar(s, p, i)?;
+        let obj = field(s, p, i)?;
+        if cacheable {
+            let kind = (*obj.cast::<Header>()).kind;
+            cacheable = kind == key(s, 53) || kind == key(s, 54) || kind == key(s, 56);
+        }
+        *v = number(s, obj)?;
+    }
+    if cacheable && api!(4, unsafe extern "C" fn() -> O)().is_null() {
+        PROFILE.with(|cache| {
+            *cache.borrow_mut() = ProfileCache {
+                context: s as usize,
+                identity: p as usize,
+                version,
+                values: out,
+            }
+        });
     }
     Some(out)
 }
@@ -186,17 +302,17 @@ unsafe extern "C" fn polar(s: O, a: *const O, n: isize) -> O {
         (|| {
             let a = args(a, n, 6)?;
             let p = polar_input(s, a[0])?;
-            let mode = number(a[5])?;
+            let mode = number(s, a[5])?;
             if ![0., 1., 2.].contains(&mode) {
                 return None;
             }
             let mut out = [0.; 2];
             if super::wt_polar(
                 p.as_ptr(),
-                number(a[1])?,
-                number(a[2])?,
-                number(a[3])?,
-                number(a[4])?,
+                number(s, a[1])?,
+                number(s, a[2])?,
+                number(s, a[3])?,
+                number(s, a[4])?,
                 mode as u32,
                 out.as_mut_ptr(),
             ) == 0
@@ -213,7 +329,7 @@ unsafe extern "C" fn packed_assembly(s: O, a: *const O, n: isize) -> O {
         s,
         (|| {
             let a = args(a, n, 2)?;
-            let moment = number(a[1])? != 0.;
+            let moment = number(s, a[1])? != 0.;
             let mut input = [0.; 45];
             sequence(s, a[0], &mut input[..if moment { 45 } else { 24 }])?;
             let mut out = [0.; 3];
@@ -323,7 +439,7 @@ unsafe extern "C" fn atmosphere(s: O, a: *const O, n: isize) -> O {
         (|| {
             let a = args(a, n, 1)?;
             let mut out = [0.; 3];
-            super::wt_atmosphere(number(a[0])?, out.as_mut_ptr());
+            super::wt_atmosphere(number(s, a[0])?, out.as_mut_ptr());
             if !out.iter().all(|v| v.is_finite()) {
                 return None;
             }
@@ -385,7 +501,7 @@ unsafe extern "C" fn vector(s: O, a: *const O, n: isize) -> O {
         s,
         (|| {
             let a = args(a, n, 4)?;
-            let mode = number(a[3])?;
+            let mode = number(s, a[3])?;
             if ![0., 1., 2.].contains(&mode) {
                 return None;
             }
@@ -437,8 +553,8 @@ unsafe extern "C" fn integrate(s: O, a: *const O, n: isize) -> O {
             }
             sequence(s, a[1], &mut input[21..24])?;
             sequence(s, a[2], &mut input[24..27])?;
-            input[27] = number(a[3])?;
-            input[28] = number(a[4])?;
+            input[27] = number(s, a[3])?;
+            input[28] = number(s, a[4])?;
             sequence(s, a[5], &mut input[29..33])?;
             let mut out = [0.; 51];
             if super::aero::wt_integrate(input.as_ptr(), out.as_mut_ptr()) == 0 {
@@ -560,7 +676,7 @@ unsafe extern "C" fn aero(s: O, a: *const O, n: isize) -> O {
             sequence(s, field(s, a[0], AERO_INPUT + 12)?, &mut p[12..16])?;
             sequence(s, field(s, a[0], AERO_INPUT + 13)?, &mut p[16..19])?;
             sequence(s, field(s, a[0], AERO_INPUT + 14)?, &mut p[19..22])?;
-            v[0] = number(a[1])?;
+            v[0] = number(s, a[1])?;
             sequence(s, a[2], &mut v[1..4])?;
             sequence(s, a[3], &mut v[4..8])?;
             sequence(s, a[4], &mut v[8..11])?;
@@ -592,7 +708,7 @@ unsafe extern "C" fn aero(s: O, a: *const O, n: isize) -> O {
                 (29, 33),
             ] {
                 if let Some(value) = field(s, a[5], AERO_INPUT + k) {
-                    v[i] = number(value)?;
+                    v[i] = number(s, value)?;
                     supplied += 1;
                 }
             }
@@ -757,7 +873,7 @@ unsafe extern "C" fn finite_graph(s: O, a: *const O, n: isize) -> O {
         s,
         (|| {
             let a = args(a, n, 2)?;
-            let value = all_finite(s, a[0], 0, number(a[1])? != 0.)?;
+            let value = all_finite(s, a[0], 0, number(s, a[1])? != 0.)?;
             let result = key(s, if value { 60 } else { 61 });
             inc(result);
             Some(Owned(result))
@@ -1039,7 +1155,12 @@ pub unsafe extern "C" fn wt_python_scalar(index: u32, context: O) -> O {
     )
 }
 #[no_mangle]
-pub unsafe extern "C" fn wt_python_init(addresses: *const usize, len: usize, context: O) -> O {
+pub unsafe extern "C" fn wt_python_init(
+    addresses: *const usize,
+    len: usize,
+    context: O,
+    layout: u32,
+) -> O {
     if len != 27 || context.is_null() {
         return ptr::null_mut();
     }
@@ -1059,6 +1180,8 @@ pub unsafe extern "C" fn wt_python_init(addresses: *const usize, len: usize, con
     if api!(9, unsafe extern "C" fn(O) -> isize)(context) != 144 {
         return ptr::null_mut();
     }
+    FAST_LAYOUT.store(layout == 1, Ordering::Relaxed);
+    PROFILE.with(|cache| cache.borrow_mut().identity = 0);
     let result = (|| {
         let d = dict()?;
         for m in &METHODS {

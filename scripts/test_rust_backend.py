@@ -279,6 +279,25 @@ class Parity(unittest.TestCase):
             except Exception as error:
                 with self.assertRaises(type(error)):native[i](*args)
 
+    def test_profile_cache_mutations(self):
+        p=dict(POLAR)
+        for method in (lambda:p.update(cl0=.25),lambda:p.update(cyMult=1),lambda:p.update(cd0=.04),lambda:p.update(kq=91.),lambda:p.pop('clKq'),lambda:p.update(clKq=77.)):
+            method()
+            if 'clKq' not in p:
+                self.assertIsNone(rust.polar(self.library,p,37.,12.,.2,.9))
+            else:
+                expected=REF_POLAR.calc_c(p,37.,12.,.2,.9)
+                for _ in range(3):self.assertEqual(rust.polar(self.library,p,37.,12.,.2,.9),expected)
+        if self.library._python:
+            class MutableNumber:
+                def __init__(self,value):self.value=value
+                def __float__(self):return self.value
+            number=MutableNumber(1.)
+            p['cyMult']=number
+            first=rust.polar(self.library,p,5.,12.,.2,.9)
+            number.value=2.
+            self.assertNotEqual(first,rust.polar(self.library,p,5.,12.,.2,.9))
+
     def test_mutated_polar(self):
         p=dict(POLAR)
         polar.calc_c(p,12.,4.)
