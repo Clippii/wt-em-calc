@@ -26,14 +26,14 @@ library and also opts compiled EM modules into the Rust calls. Selecting
 `WT_MISSILE_BACKEND=reference` continues to bypass all missile acceleration.
 No compiler runs during startup. Rebuild after editing native sources.
 
-Run `python scripts/test_rust_backend.py --benchmark` to check exact reference
+Run `python scripts/test_rust_backend.py --benchmark --benchmark-flight` to check exact reference
 parity and measure call costs including Python marshalling. Local Windows
-measurements found approximately 9× faster missile quaternion updates, 8.5×
-faster atmosphere evaluation, 2.9× faster moment assembly and 1.4× faster polar
+measurements found approximately 8.6× faster missile quaternion updates, 8×
+faster atmosphere evaluation, 2.8× faster moment assembly and 1.4× faster polar
 force calls. The optional batch API (`rust_backend.polar_batch`) evaluates a
-361-angle sweep about 8.5× faster, but is not yet used by the adaptive EM solver.
-A complete 10-second AIM-9L flight improved from a median 0.624 s to 0.585 s
-across seven runs per backend (about 6.2% less runtime), with identical output.
+361-angle sweep about 8× faster, but is not yet used by the adaptive EM solver.
+A complete 10-second AIM-9L flight improved from a median 0.637 s to 0.604 s
+across seven runs per backend (about 5.2% less runtime), with identical output.
 These compare against the Python path, not the existing Cython build; full EM
 diagram and altitude-job speedups have not been measured.
 

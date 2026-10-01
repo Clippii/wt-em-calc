@@ -10,6 +10,12 @@ import sys
 import os
 import json
 import subprocess
+import statistics
+import time
+import hashlib
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
 import component_assembly as assembly
 import polar_f32 as polar
@@ -108,6 +114,27 @@ class Parity(unittest.TestCase):
     def test_exception_fallback(self):
         with self.assertRaises(OverflowError):polar.calc_cl(POLAR,1e100)
         with self.assertRaises(ValueError):polar.calc_c(POLAR,1.,math.inf)
+        # A finite capped drag result must not mask an intermediate overflow.
+        extreme=dict(POLAR,clLineCoeff=1e30)
+        with self.assertRaises(OverflowError):polar.calc_cd(extreme,100.)
+
+    def test_missing_or_stale_build(self):
+        saved=(rust._library,rust._attempted)
+        try:
+            with tempfile.TemporaryDirectory() as directory, patch.object(rust,'DIRECTORY',Path(directory)):
+                for manifest in (None,dict(signature='stale'),
+                                 dict(signature=rust.signature(),binary='invalid.dll',sha256='wrong')):
+                    path=Path(directory)/'manifest.json'
+                    if manifest is not None:
+                        path.write_text(json.dumps(manifest))
+                        (Path(directory)/'invalid.dll').write_bytes(b'invalid')
+                    rust._library=None;rust._attempted=False
+                    with patch.dict(os.environ,WT_NUMERIC_BACKEND='auto'):
+                        self.assertIsNone(rust.load(__file__))
+                    with patch.dict(os.environ,WT_NUMERIC_BACKEND='rust'):
+                        with self.assertRaises(RuntimeError):rust.load(__file__)
+        finally:
+            rust._library,rust._attempted=saved
 
     def test_full_missile_flights(self):
         for missile in ('us_aim9l_sidewinder', 'us_aim7f_sparrow', 'su_r_73'):
@@ -146,8 +173,40 @@ def benchmark():
         print(f'{name}: Python {a*1e6:.2f} us; Rust {b*1e6:.2f} us; speedup {a/b:.2f}x')
 
 
+def flight_worker():
+    import missile_worker
+    request=dict(missile='us_aim9l_sidewinder',duration=10,
+                 launcher=dict(position=[0,5000,0],velocity=[300,0,0],angles=[0,0,0]),
+                 target=dict(position=[4000,5000,0],velocity=[200,0,0],angles=[0,0,0]))
+    times=[]
+    for _ in range(7):
+        started=time.perf_counter();result=missile_worker.simulate(request)
+        times.append(time.perf_counter()-started)
+    digest=hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest()
+    print(json.dumps(dict(median_s=statistics.median(times),times_s=times,digest=digest)))
+
+
+def benchmark_flight():
+    results=[]
+    for mode in ('python','rust'):
+        env=dict(os.environ,WT_MISSILE_BACKEND='python',WT_NUMERIC_BACKEND=mode)
+        run=subprocess.run([sys.executable,__file__,'--flight-worker'],env=env,
+                           capture_output=True,text=True,check=True,timeout=120)
+        result=json.loads(run.stdout);results.append(result)
+        print(f"10-second AIM-9L flight, {mode}: median {result['median_s']:.6f} s (7 runs; excludes startup)")
+    if results[0]['digest']!=results[1]['digest']:raise AssertionError('Flight output changed')
+    print(f"Whole-flight speedup: {results[0]['median_s']/results[1]['median_s']:.3f}x; output matches exactly")
+
+
 if __name__ == '__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--benchmark',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--benchmark',action='store_true')
+    parser.add_argument('--benchmark-flight',action='store_true')
+    parser.add_argument('--flight-worker',action='store_true',help=argparse.SUPPRESS)
+    args=parser.parse_args()
+    if args.flight_worker:
+        flight_worker();raise SystemExit(0)
     result=unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(Parity))
     if not result.wasSuccessful():raise SystemExit(1)
     if args.benchmark:benchmark()
+    if args.benchmark_flight:benchmark_flight()

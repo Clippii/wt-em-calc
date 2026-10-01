@@ -56,12 +56,12 @@ def load(module_file):
             library = ctypes.CDLL(str(path))
             library.wt_numeric_abi.argtypes = []
             library.wt_numeric_abi.restype = ctypes.c_uint32
-            if library.wt_numeric_abi() != 1:
+            if library.wt_numeric_abi() != 2:
                 raise ValueError('Unsupported Rust numeric ABI')
             library.wt_polar.argtypes = [P, D, D, D, D, ctypes.c_uint32, P]
-            library.wt_polar.restype = None
+            library.wt_polar.restype = ctypes.c_uint32
             library.wt_polar_batch.argtypes = [P, P, ctypes.c_size_t, P]
-            library.wt_polar_batch.restype = None
+            library.wt_polar_batch.restype = ctypes.c_uint32
             library.wt_atmosphere.argtypes = [D, P]
             library.wt_atmosphere.restype = None
             library.wt_orientation.argtypes = [P, P]
@@ -69,7 +69,7 @@ def load(module_file):
             for name in ('wt_force', 'wt_moment'):
                 function = getattr(library, name)
                 function.argtypes = [P, P]
-                function.restype = None
+                function.restype = ctypes.c_uint32
             _library = library
         except (OSError, ValueError, KeyError, AttributeError) as error:
             if mode == 'rust':
@@ -95,7 +95,8 @@ def polar(library, p, a, angle=0., cl_add=0., cd_coeff=1., mode=2):
     if packed is None or _array((a, angle, cl_add, cd_coeff)) is None:
         return None
     result = (D * 2)()
-    library.wt_polar(packed, a, angle, cl_add, cd_coeff, mode, result)
+    if not library.wt_polar(packed, a, angle, cl_add, cd_coeff, mode, result):
+        return None
     return list(result) if all(math.isfinite(v) for v in result) else None
 
 
@@ -107,7 +108,8 @@ def assembly(library, values, moment=False):
     if len(packed) != expected:
         return None
     result = (D * 3)()
-    (library.wt_moment if moment else library.wt_force)(packed, result)
+    if not (library.wt_moment if moment else library.wt_force)(packed, result):
+        return None
     return list(result) if all(math.isfinite(v) for v in result) else None
 
 
@@ -123,8 +125,8 @@ def polar_batch(p, rows):
         from polar_f32 import calc_c
         return [calc_c(p, *row) for row in rows]
     result = (D * (len(rows)*2))()
-    library.wt_polar_batch(packed, inputs, len(rows), result)
-    if not all(math.isfinite(v) for v in result):
+    valid = library.wt_polar_batch(packed, inputs, len(rows), result)
+    if not valid or not all(math.isfinite(v) for v in result):
         from polar_f32 import calc_c
         return [calc_c(p, *row) for row in rows]
     return [list(result[i:i+2]) for i in range(0, len(result), 2)]
