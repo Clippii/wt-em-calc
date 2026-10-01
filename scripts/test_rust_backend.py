@@ -331,6 +331,29 @@ class Parity(unittest.TestCase):
             number.value=2.
             self.assertNotEqual(first,rust.polar(self.library,p,5.,12.,.2,.9))
 
+    def test_public_cached_polars(self):
+        rng=random.Random(61003)
+        p=dict(POLAR)
+        for n in range(24):
+            # Alternate cache hits with changes to constants used by prepared
+            # post-stall branches, including positive and negative sides.
+            p.update(maxDistAng=40.+n,clAfterCritHigh=.1+n/12,
+                     clAfterCritLow=-.2-n/15,clDeclCoeff=.001+n/5000)
+            for a in [-180.,-140.,-90.,-40.,-21.,-14.,0.,16.,21.,40.,90.,140.,180.]+[rng.uniform(-180,180) for _ in range(30)]:
+                args=(a,rng.uniform(-180,180),.2,.9)
+                for _ in range(2):
+                    for x,y in zip(polar.calc_c(p,*args),REF_POLAR.calc_c(p,*args)):self.exact(x,y)
+                    self.exact(polar.calc_cl(p,a),REF_POLAR.calc_cl(p,a))
+                    self.exact(polar.calc_cd(p,a),REF_POLAR.calc_cd(p,a))
+        class MutableNumber:
+            def __init__(self,v):self.value=v
+            def __float__(self):return self.value
+        value=MutableNumber(1.)
+        p['cyMult']=value
+        for v in (1.,2.,-1.):
+            value.value=v
+            self.assertEqual(polar.calc_c(p,5.,12.,.2,.9),REF_POLAR.calc_c(p,5.,12.,.2,.9))
+
     def test_bound_keywords_and_arity(self):
         if not self.library._python:self.skipTest('Direct builtins unavailable')
         self.assertEqual(polar.calc_c(POLAR,a=37.,angle=12.,cl_add=.2,cd_coeff=.9),REF_POLAR.calc_c(POLAR,37.,12.,.2,.9))
