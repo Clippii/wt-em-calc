@@ -312,7 +312,7 @@ unsafe fn all_args<'a>(values: *const O, n: isize) -> &'a [O] {
         std::slice::from_raw_parts(values, n as usize)
     }
 }
-unsafe fn polar_input(s: O, p: O) -> Option<[f64; 28]> {
+unsafe fn polar_input(s: O, p: O, strict: bool) -> Option<[f64; 28]> {
     dictionary(s, p)?;
     let version = if fast_layout() {
         (*p.cast::<DictObject>()).version
@@ -340,9 +340,22 @@ unsafe fn polar_input(s: O, p: O) -> Option<[f64; 28]> {
             continue;
         }
         let obj = field(s, p, i)?;
-        if cacheable {
-            let kind = (*obj.cast::<Header>()).kind;
-            cacheable = kind == key(s, 53) || kind == key(s, 54) || kind == key(s, 56);
+        if cacheable || strict {
+            let typ = if fast_layout() {
+                None
+            } else {
+                Some(owned(api!(18, unsafe extern "C" fn(O) -> O)(obj))?)
+            };
+            let kind = if let Some(ref typ) = typ {
+                typ.0
+            } else {
+                (*obj.cast::<Header>()).kind
+            };
+            let plain = kind == key(s, 53) || kind == key(s, 54) || kind == key(s, 56);
+            if strict && !plain {
+                return None;
+            }
+            cacheable &= plain;
         }
         *v = number(s, obj)?;
     }
@@ -417,7 +430,7 @@ unsafe extern "C" fn polar(s: O, a: *const O, n: isize) -> O {
         s,
         (|| {
             let a = args(a, n, 6)?;
-            let p = polar_input(s, a[0])?;
+            let p = polar_input(s, a[0], false)?;
             let mode = number(s, a[5])?;
             if ![0., 1., 2.].contains(&mode) {
                 return None;
@@ -514,7 +527,7 @@ unsafe extern "C" fn batch(s: O, a: *const O, n: isize) -> O {
         s,
         (|| {
             let a = args(a, n, 2)?;
-            let p = polar_input(s, a[0])?;
+            let p = polar_input(s, a[0], false)?;
             let count = if fast_layout() {
                 if (*a[1].cast::<Header>()).kind != key(s, 49) {
                     return None;
@@ -1413,7 +1426,7 @@ unsafe fn bound_call(self_: O, argv: *const O, n: isize, keywords: O, kind: u32)
                             {
                                 r = v;
                             } else {
-                                let p = polar_input(s, a[0])?;
+                                let p = polar_input(s, a[0], true)?;
                                 if polar_values(
                                     &p,
                                     angle,

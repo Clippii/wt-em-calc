@@ -348,11 +348,18 @@ class Parity(unittest.TestCase):
         class MutableNumber:
             def __init__(self,v):self.value=v
             def __float__(self):return self.value
+            def __rmul__(self,x):return x*self.value + .125
         value=MutableNumber(1.)
         p['cyMult']=value
         for v in (1.,2.,-1.):
             value.value=v
             self.assertEqual(polar.calc_c(p,5.,12.,.2,.9),REF_POLAR.calc_c(p,5.,12.,.2,.9))
+
+        class FloatOnly:
+            def __float__(self):return 1.
+        p['cyMult']=FloatOnly()
+        for fn in (polar.calc_c,REF_POLAR.calc_c):
+            with self.assertRaises(TypeError):fn(p,5.,12.,.2,.9)
 
     def test_bound_keywords_and_arity(self):
         if not self.library._python:self.skipTest('Direct builtins unavailable')
