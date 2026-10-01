@@ -53,9 +53,9 @@ struct ProfileCache {
     context: usize,
     identity: usize,
     version: u64,
-    values: [f64; 24],
+    values: [f64; 28],
 }
-thread_local! {static PROFILE:RefCell<ProfileCache>=RefCell::new(ProfileCache{context:0,identity:0,version:0,values:[0.;24]});}
+thread_local! {static PROFILE:RefCell<ProfileCache>=RefCell::new(ProfileCache{context:0,identity:0,version:0,values:[0.;28]});}
 #[inline]
 fn fast_layout() -> bool {
     FAST_LAYOUT.load(Ordering::Relaxed)
@@ -302,7 +302,7 @@ unsafe fn all_args<'a>(values: *const O, n: isize) -> &'a [O] {
         std::slice::from_raw_parts(values, n as usize)
     }
 }
-unsafe fn polar_input(s: O, p: O) -> Option<[f64; 24]> {
+unsafe fn polar_input(s: O, p: O) -> Option<[f64; 28]> {
     dictionary(s, p)?;
     let version = if fast_layout() {
         (*p.cast::<DictObject>()).version
@@ -321,9 +321,9 @@ unsafe fn polar_input(s: O, p: O) -> Option<[f64; 24]> {
             return Some(values);
         }
     }
-    let mut out = [0.; 24];
+    let mut out = [0.; 28];
     let mut cacheable = version != 0;
-    for (i, v) in out.iter_mut().enumerate() {
+    for (i, v) in out[..24].iter_mut().enumerate() {
         // Aerodynamic-center and pitching-moment fields are unused by the
         // lift/drag kernels; the reference never reads them either.
         if (12..15).contains(&i) {
@@ -358,7 +358,7 @@ unsafe fn polar_input(s: O, p: O) -> Option<[f64; 24]> {
 }
 #[inline(always)]
 unsafe fn polar_values(
-    p: &[f64; 24],
+    p: &[f64; 28],
     a: f64,
     rotation: f64,
     added: f64,

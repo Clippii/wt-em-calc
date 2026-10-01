@@ -93,32 +93,39 @@ fn cl<const CHECK: bool>(p: &[f64], angle: f64) -> f64 {
                     polar_mul::<CHECK>(polar_mul::<CHECK>(polar_mul::<CHECK>(da, da), s), p[16]),
                 );
             }
-            let h = polar_mul::<CHECK>(
-                if CHECK {
-                    polar_sin::<CHECK>(polar_mul::<CHECK>(
-                        polar_f::<CHECK>(0.039269909262657166),
-                        p[17],
-                    ))
-                } else {
-                    p[13]
-                },
-                after,
-            );
-            let x = polar_sub::<CHECK>(polar_mul::<CHECK>(polar_sub::<CHECK>(p[17], pa), s), crit);
-            let den = polar_mul::<CHECK>(x, x);
-            let coeff = if den > polar_f::<CHECK>(4e-19) {
-                polar_div::<CHECK>(
-                    polar_sub::<CHECK>(
-                        polar_sub::<CHECK>(cy, h),
-                        polar_mul::<CHECK>(
-                            polar_mul::<CHECK>(polar_mul::<CHECK>(pa, pa), s),
-                            p[16],
+            let (h, coeff) = if CHECK {
+                let h = polar_mul::<CHECK>(
+                    if CHECK {
+                        polar_sin::<CHECK>(polar_mul::<CHECK>(
+                            polar_f::<CHECK>(0.039269909262657166),
+                            p[17],
+                        ))
+                    } else {
+                        p[13]
+                    },
+                    after,
+                );
+                let x =
+                    polar_sub::<CHECK>(polar_mul::<CHECK>(polar_sub::<CHECK>(p[17], pa), s), crit);
+                let den = polar_mul::<CHECK>(x, x);
+                let coeff = if den > polar_f::<CHECK>(4e-19) {
+                    polar_div::<CHECK>(
+                        polar_sub::<CHECK>(
+                            polar_sub::<CHECK>(cy, h),
+                            polar_mul::<CHECK>(
+                                polar_mul::<CHECK>(polar_mul::<CHECK>(pa, pa), s),
+                                p[16],
+                            ),
                         ),
-                    ),
-                    den,
-                )
+                        den,
+                    )
+                } else {
+                    0.
+                };
+                (h, coeff)
             } else {
-                0.
+                let side = if positive { 0 } else { 1 };
+                (p[24 + side], p[26 + side])
             };
             let x = polar_sub::<CHECK>(polar_mul::<CHECK>(p[17], s), a);
             return polar_add::<CHECK>(polar_mul::<CHECK>(polar_mul::<CHECK>(x, x), coeff), h);
@@ -571,13 +578,30 @@ pub(crate) fn prepare_polar_profile(p: &mut [f64]) {
         mul(0_f64.max(add(maxang, -40.)), 0.03141592815518379),
     ));
     p[14] = add(two, one);
+    for side in 0..2 {
+        let sign = if side == 0 { 1. } else { -1. };
+        let cy = p[4 + side];
+        let crit = p[6 + side];
+        let after = p[if side == 0 { 20 } else { 19 }];
+        let pa = p[15];
+        let h = mul(p[13], after);
+        let x = sub(mul(sub(p[17], pa), sign), crit);
+        let den = mul(x, x);
+        let coeff = if den > f(4e-19) {
+            f(sub(sub(cy, h), mul(mul(mul(pa, pa), sign), p[16])) / den)
+        } else {
+            0.
+        };
+        p[24 + side] = h;
+        p[26 + side] = coeff;
+    }
 }
 #[inline]
 fn sin_prepared(v: f64) -> f64 {
     f(v.sin())
 }
 pub(crate) fn bounded_polar_profile(p: &[f64]) -> bool {
-    p.iter().enumerate().all(|(i, v)| match i {
+    p[..24].iter().enumerate().all(|(i, v)| match i {
         12..=14 => true,
         21 | 22 => v.abs() <= 1e5,
         _ => v.abs() <= 1000.,
