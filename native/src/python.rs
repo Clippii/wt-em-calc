@@ -56,6 +56,14 @@ struct ProfileCache {
     values: [f64; 28],
 }
 thread_local! {static PROFILE:RefCell<ProfileCache>=RefCell::new(ProfileCache{context:0,identity:0,version:0,values:[0.;28]});}
+#[derive(Clone, Copy)]
+struct ForceFields {
+    context: usize,
+    identity: usize,
+    version: u64,
+    items: [usize; 8],
+}
+thread_local! {static FORCE_FIELDS:RefCell<ForceFields>=RefCell::new(ForceFields{context:0,identity:0,version:0,items:[0;8]});}
 #[inline]
 fn fast_layout() -> bool {
     FAST_LAYOUT.load(Ordering::Relaxed)
@@ -266,6 +274,7 @@ unsafe fn set_new_item(list: O, index: isize, value: O) -> Option<()> {
 unsafe fn dict() -> Option<Owned> {
     owned(api!(13, unsafe extern "C" fn() -> O)())
 }
+#[inline(always)]
 unsafe fn put(s: O, d: &Owned, name: &'static [u8], v: Owned) -> Option<()> {
     if api!(23, unsafe extern "C" fn(O, O, O) -> i32)(d.0, key(s, output_key(name)), v.0) < 0 {
         None
@@ -273,9 +282,11 @@ unsafe fn put(s: O, d: &Owned, name: &'static [u8], v: Owned) -> Option<()> {
         Some(())
     }
 }
+#[inline(always)]
 unsafe fn put_float(s: O, d: &Owned, name: &'static [u8], v: f64) -> Option<()> {
     put(s, d, name, float(v)?)
 }
+#[inline(always)]
 unsafe fn put_list(s: O, d: &Owned, name: &'static [u8], v: &[f64]) -> Option<()> {
     put(s, d, name, list(v)?)
 }
@@ -475,6 +486,48 @@ unsafe extern "C" fn packed_assembly(s: O, a: *const O, n: isize) -> O {
         })(),
     )
 }
+unsafe fn force_fields(s: O, d: O) -> Option<[Owned; 8]> {
+    let version = if fast_layout() {
+        (*d.cast::<DictObject>()).version
+    } else {
+        0
+    };
+    if version != 0 {
+        if let Some(items) = FORCE_FIELDS.with(|cache| {
+            let c = cache.borrow();
+            if c.context == s as usize && c.identity == d as usize && c.version == version {
+                Some(c.items)
+            } else {
+                None
+            }
+        }) {
+            // Keep every value alive before parsing any user-convertible leaf.
+            return Some(std::array::from_fn(|i| {
+                let o = items[i] as O;
+                inc(o);
+                Owned(o)
+            }));
+        }
+    }
+    let mut held: [Option<Owned>; 8] = std::array::from_fn(|_| None);
+    for (i, h) in held.iter_mut().enumerate() {
+        let o = field(s, d, 24 + i)?;
+        inc(o);
+        *h = Some(Owned(o));
+    }
+    let held = held.map(|v| v.unwrap());
+    if version != 0 && (*d.cast::<DictObject>()).version == version {
+        FORCE_FIELDS.with(|cache| {
+            *cache.borrow_mut() = ForceFields {
+                context: s as usize,
+                identity: d as usize,
+                version,
+                items: std::array::from_fn(|i| held[i].0 as usize),
+            };
+        });
+    }
+    Some(held)
+}
 unsafe extern "C" fn force(s: O, a: *const O, n: isize) -> O {
     finish(
         s,
@@ -482,8 +535,9 @@ unsafe extern "C" fn force(s: O, a: *const O, n: isize) -> O {
             let a = args(a, n, 1)?;
             dictionary(s, a[0])?;
             let mut input = [0.; 24];
+            let held = force_fields(s, a[0])?;
             for i in 0..8 {
-                sequence(s, field(s, a[0], 24 + i)?, &mut input[i * 3..i * 3 + 3])?
+                sequence(s, held[i].0, &mut input[i * 3..i * 3 + 3])?;
             }
             let mut out = [0.; 3];
             if let Some(v) = super::bounded_force(&input) {
@@ -590,6 +644,7 @@ unsafe extern "C" fn atmosphere(s: O, a: *const O, n: isize) -> O {
         })(),
     )
 }
+#[inline(always)]
 unsafe fn rotation(s: O, out: &[f64]) -> Option<Owned> {
     let result = dict()?;
     let trig = owned(api!(11, unsafe extern "C" fn(isize) -> O)(3))?;
@@ -1579,7 +1634,7 @@ pub unsafe extern "C" fn wt_python_bound(index: u32, context: O) -> O {
     )
 }
 
-#[inline]
+#[inline(always)]
 fn output_key(name: &[u8]) -> usize {
     match name {
         b"density\0" => 62,

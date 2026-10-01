@@ -252,6 +252,25 @@ class Parity(unittest.TestCase):
         huge={name:[3e38,3e38,3e38] for name in (*assembly.NAMES,'parasite')}
         with self.assertRaises(OverflowError):assembly.assemble_force(huge)
 
+    def test_force_field_cache_mutations_and_ownership(self):
+        import gc
+        forces={name:[1.,2.,3.] for name in (*assembly.NAMES,'parasite')}
+        vectors=list(forces.values())
+        counts=[sys.getrefcount(v) for v in vectors]
+        for n in range(2000):
+            # Change a live leaf without changing the outer dictionary version.
+            forces[assembly.NAMES[0]][1]=float(-n)
+            self.assertEqual(assembly.assemble_force(forces),REF_ASSEMBLY.assemble_force(forces))
+        gc.collect()
+        self.assertEqual(counts,[sys.getrefcount(v) for v in vectors])
+        for n,name in enumerate(forces):
+            forces[name]=[float(n),-float(n),.1]
+            self.assertEqual(assembly.assemble_force(forces),REF_ASSEMBLY.assemble_force(forces))
+        forces.pop('parasite')
+        with self.assertRaises(KeyError):assembly.assemble_force(forces)
+        forces['parasite']=[0.,0.,0.]
+        self.assertEqual(assembly.assemble_force(forces),REF_ASSEMBLY.assemble_force(forces))
+
     def test_batch(self):
         rows=[(a,a/2,0.2,0.9) for a in range(-180,181)]
         self.assertEqual(rust.polar_batch(POLAR,rows),[REF_POLAR.calc_c(POLAR,*row) for row in rows])
