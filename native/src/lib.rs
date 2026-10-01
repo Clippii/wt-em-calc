@@ -94,10 +94,14 @@ fn cl<const CHECK: bool>(p: &[f64], angle: f64) -> f64 {
                 );
             }
             let h = polar_mul::<CHECK>(
-                polar_sin::<CHECK>(polar_mul::<CHECK>(
-                    polar_f::<CHECK>(0.039269909262657166),
-                    p[17],
-                )),
+                if CHECK {
+                    polar_sin::<CHECK>(polar_mul::<CHECK>(
+                        polar_f::<CHECK>(0.039269909262657166),
+                        p[17],
+                    ))
+                } else {
+                    p[13]
+                },
                 after,
             );
             let x = polar_sub::<CHECK>(polar_mul::<CHECK>(polar_sub::<CHECK>(p[17], pa), s), crit);
@@ -134,18 +138,22 @@ fn cl<const CHECK: bool>(p: &[f64], angle: f64) -> f64 {
         } else {
             sa
         };
-        let one = polar_sin::<CHECK>(polar_mul::<CHECK>(
-            polar_f::<CHECK>(0.039269909262657166),
-            maxang,
-        ));
-        let two = polar_sin::<CHECK>(polar_sub::<CHECK>(
-            polar_f::<CHECK>(-1.5707963705062866),
-            polar_mul::<CHECK>(
-                0_f64.max(polar_add::<CHECK>(maxang, -40.)),
-                polar_f::<CHECK>(0.03141592815518379),
-            ),
-        ));
-        let correction = polar_add::<CHECK>(two, one);
+        let correction = if CHECK {
+            let one = polar_sin::<CHECK>(polar_mul::<CHECK>(
+                polar_f::<CHECK>(0.039269909262657166),
+                maxang,
+            ));
+            let two = polar_sin::<CHECK>(polar_sub::<CHECK>(
+                polar_f::<CHECK>(-1.5707963705062866),
+                polar_mul::<CHECK>(
+                    0_f64.max(polar_add::<CHECK>(maxang, -40.)),
+                    polar_f::<CHECK>(0.03141592815518379),
+                ),
+            ));
+            polar_add::<CHECK>(two, one)
+        } else {
+            p[14]
+        };
         let correction = polar_mul::<CHECK>(
             polar_add::<CHECK>(
                 polar_mul::<CHECK>(
@@ -554,6 +562,20 @@ pub unsafe extern "C" fn wt_orientation(input: *const f64, out: *mut f64) -> u32
 /// denominator >4e-19); rotated/scaled results stay below 3.3e37 < f32::MAX.
 /// All original rounding boundaries remain. Inputs outside this proof use the
 /// checked implementation, including overflow/fallback cases.
+pub(crate) fn prepare_polar_profile(p: &mut [f64]) {
+    p[13] = sin_prepared(mul(0.039269909262657166, p[17]));
+    let maxang = 40_f64.max(p[17]);
+    let one = sin_prepared(mul(0.039269909262657166, maxang));
+    let two = sin_prepared(sub(
+        -1.5707963705062866,
+        mul(0_f64.max(add(maxang, -40.)), 0.03141592815518379),
+    ));
+    p[14] = add(two, one);
+}
+#[inline]
+fn sin_prepared(v: f64) -> f64 {
+    f(v.sin())
+}
 pub(crate) fn bounded_polar_profile(p: &[f64]) -> bool {
     p.iter().enumerate().all(|(i, v)| match i {
         12..=14 => true,

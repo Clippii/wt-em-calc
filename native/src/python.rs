@@ -66,9 +66,25 @@ macro_rules! api {
     };
 }
 unsafe fn inc(o: O) {
+    if fast_layout() {
+        let h = &mut *o.cast::<Header>();
+        // Only ordinary refcounts; immortal/overflow cases retain runtime API.
+        if h.references > 0 && h.references < (u32::MAX as isize - 1) {
+            h.references += 1;
+            return;
+        }
+    }
     api!(0, unsafe extern "C" fn(O))(o);
 }
 unsafe fn dec(o: O) {
+    if fast_layout() {
+        let h = &mut *o.cast::<Header>();
+        // Final destruction and immortal objects always use Py_DecRef.
+        if h.references > 1 && h.references < u32::MAX as isize {
+            h.references -= 1;
+            return;
+        }
+    }
     api!(1, unsafe extern "C" fn(O))(o);
 }
 struct Owned(O);
@@ -315,6 +331,9 @@ unsafe fn polar_input(s: O, p: O) -> Option<[f64; 24]> {
     } else {
         0.
     };
+    if out[12] == 1. {
+        super::prepare_polar_profile(&mut out);
+    }
     if cacheable && api!(4, unsafe extern "C" fn() -> O)().is_null() {
         PROFILE.with(|cache| {
             *cache.borrow_mut() = ProfileCache {
@@ -447,17 +466,28 @@ unsafe extern "C" fn batch(s: O, a: *const O, n: isize) -> O {
         (|| {
             let a = args(a, n, 2)?;
             let p = polar_input(s, a[0])?;
-            let typ = owned(api!(18, unsafe extern "C" fn(O) -> O)(a[1]))?;
-            if typ.0 != key(s, 49) {
-                return None;
-            }
-            let count = api!(6, unsafe extern "C" fn(O) -> isize)(a[1]);
+            let count = if fast_layout() {
+                if (*a[1].cast::<Header>()).kind != key(s, 49) {
+                    return None;
+                }
+                (*a[1].cast::<VarObject>()).size
+            } else {
+                let typ = owned(api!(18, unsafe extern "C" fn(O) -> O)(a[1]))?;
+                if typ.0 != key(s, 49) {
+                    return None;
+                }
+                api!(6, unsafe extern "C" fn(O) -> isize)(a[1])
+            };
             if count < 0 {
                 return None;
             }
             let result = owned(api!(11, unsafe extern "C" fn(isize) -> O)(count))?;
             for i in 0..count {
-                let row = api!(7, unsafe extern "C" fn(O, isize) -> O)(a[1], i);
+                let row = if fast_layout() {
+                    *(*a[1].cast::<ListObject>()).items.add(i as usize)
+                } else {
+                    api!(7, unsafe extern "C" fn(O, isize) -> O)(a[1], i)
+                };
                 let mut input = [0.; 4];
                 sequence(s, row, &mut input)?;
                 let mut out = [0.; 2];
@@ -474,14 +504,7 @@ unsafe extern "C" fn batch(s: O, a: *const O, n: isize) -> O {
                 {
                     return None;
                 }
-                if api!(12, unsafe extern "C" fn(O, isize, O) -> i32)(
-                    result.0,
-                    i,
-                    list(&out)?.take(),
-                ) < 0
-                {
-                    return None;
-                }
+                set_new_item(result.0, i, list(&out)?.take())?;
             }
             Some(result)
         })(),
@@ -521,9 +544,7 @@ unsafe fn rotation(s: O, out: &[f64]) -> Option<Owned> {
             ))?,
         )?;
         put_float(s, &d, b"reduced\0", out[i * 4 + 3])?;
-        if api!(12, unsafe extern "C" fn(O, isize, O) -> i32)(trig.0, i as isize, d.take()) < 0 {
-            return None;
-        }
+        set_new_item(trig.0, i as isize, d.take())?;
     }
     put(s, &result, b"trig\0", trig)?;
     put_list(s, &result, b"delta\0", &out[12..16])?;
