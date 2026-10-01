@@ -228,10 +228,20 @@ unsafe fn float(v: f64) -> Option<Owned> {
 #[inline(always)]
 unsafe fn list(v: &[f64]) -> Option<Owned> {
     let result = owned(api!(11, unsafe extern "C" fn(isize) -> O)(v.len() as isize))?;
-    for (i, x) in v.iter().enumerate() {
-        let value = float(*x)?.take();
-        // PyList_SetItem steals the new reference, including on failure.
-        set_new_item(result.0, i as isize, value)?;
+    if fast_layout() {
+        let items = (*result.0.cast::<ListObject>()).items.cast_mut();
+        let make_float = api!(10, unsafe extern "C" fn(f64) -> O);
+        for (i, x) in v.iter().enumerate() {
+            let value = make_float(*x);
+            if value.is_null() {
+                return None;
+            }
+            items.add(i).write(value);
+        }
+    } else {
+        for (i, x) in v.iter().enumerate() {
+            set_new_item(result.0, i as isize, float(*x)?.take())?;
+        }
     }
     Some(result)
 }
@@ -355,6 +365,34 @@ unsafe fn polar_input(s: O, p: O) -> Option<[f64; 28]> {
         });
     }
     Some(out)
+}
+#[inline(always)]
+unsafe fn cached_polar(
+    s: O,
+    profile: O,
+    a: f64,
+    rotation: f64,
+    added: f64,
+    drag: f64,
+    mode: u32,
+) -> Option<[f64; 2]> {
+    if !fast_layout() {
+        return None;
+    }
+    dictionary(s, profile)?;
+    let version = (*profile.cast::<DictObject>()).version;
+    PROFILE.with(|cache| {
+        let c = cache.borrow();
+        if c.context == s as usize
+            && c.identity == profile as usize
+            && c.version == version
+            && c.values[12] == 1.
+        {
+            super::bounded_polar(&c.values, a, rotation, added, drag, mode)
+        } else {
+            None
+        }
+    })
 }
 #[inline(always)]
 unsafe fn polar_values(
@@ -1358,7 +1396,6 @@ unsafe fn bound_call(self_: O, argv: *const O, n: isize, keywords: O, kind: u32)
                     finish(
                         s,
                         (|| {
-                            let p = polar_input(s, a[0])?;
                             let angle = number(s, a[1])?;
                             let rotation = if kind == 4 { number(s, a[2])? } else { 0. };
                             let added = if n > 3 { number(s, a[3])? } else { 0. };
@@ -1371,11 +1408,25 @@ unsafe fn bound_call(self_: O, argv: *const O, n: isize, keywords: O, kind: u32)
                             } else {
                                 2
                             };
-                            if polar_values(&p, angle, rotation, added, drag, mode, r.as_mut_ptr())
-                                == 0
-                                || !r.iter().all(|v| v.is_finite())
+                            if let Some(v) =
+                                cached_polar(s, a[0], angle, rotation, added, drag, mode)
                             {
-                                return None;
+                                r = v;
+                            } else {
+                                let p = polar_input(s, a[0])?;
+                                if polar_values(
+                                    &p,
+                                    angle,
+                                    rotation,
+                                    added,
+                                    drag,
+                                    mode,
+                                    r.as_mut_ptr(),
+                                ) == 0
+                                    || !r.iter().all(|v| v.is_finite())
+                                {
+                                    return None;
+                                }
                             }
                             if mode == 2 {
                                 list(&r)
