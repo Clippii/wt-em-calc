@@ -486,6 +486,54 @@ unsafe extern "C" fn packed_assembly(s: O, a: *const O, n: isize) -> O {
         })(),
     )
 }
+#[inline(always)]
+unsafe fn cached_force_values(s: O, d: O) -> Option<[f64; 24]> {
+    if !fast_layout() {
+        return None;
+    }
+    let version = (*d.cast::<DictObject>()).version;
+    let cached = FORCE_FIELDS.with(|cache| {
+        let c = cache.borrow();
+        if c.context == s as usize && c.identity == d as usize && c.version == version {
+            Some(c.items)
+        } else {
+            None
+        }
+    })?;
+    let list_type = key(s, 49);
+    let tuple_type = key(s, 50);
+    let float_type = key(s, 53);
+    let mut values = [0.; 24];
+    // No Python API calls, allocations or conversions until every borrowed
+    // value has been copied. Thus no callback can invalidate these pointers.
+    for (i, address) in cached.iter().enumerate() {
+        let o = *address as O;
+        let kind = (*o.cast::<Header>()).kind;
+        if kind != list_type && kind != tuple_type {
+            return None;
+        }
+        if (*o.cast::<VarObject>()).size != 3 {
+            return None;
+        }
+        let items = if kind == list_type {
+            (*o.cast::<ListObject>()).items
+        } else {
+            (*o.cast::<TupleObject>()).items.as_ptr()
+        };
+        for j in 0..3 {
+            let item = *items.add(j);
+            if (*item.cast::<Header>()).kind != float_type {
+                return None;
+            }
+            let value = (*item.cast::<FloatObject>()).value;
+            if !value.is_finite() || value.abs() > f32::MAX as f64 {
+                return None;
+            }
+            values[i * 3 + j] = value;
+        }
+    }
+    Some(values)
+}
 unsafe fn force_fields(s: O, d: O) -> Option<[Owned; 8]> {
     let version = if fast_layout() {
         (*d.cast::<DictObject>()).version
@@ -534,11 +582,16 @@ unsafe extern "C" fn force(s: O, a: *const O, n: isize) -> O {
         (|| {
             let a = args(a, n, 1)?;
             dictionary(s, a[0])?;
-            let mut input = [0.; 24];
-            let held = force_fields(s, a[0])?;
-            for i in 0..8 {
-                sequence(s, held[i].0, &mut input[i * 3..i * 3 + 3])?;
-            }
+            let input = if let Some(v) = cached_force_values(s, a[0]) {
+                v
+            } else {
+                let mut input = [0.; 24];
+                let held = force_fields(s, a[0])?;
+                for i in 0..8 {
+                    sequence(s, held[i].0, &mut input[i * 3..i * 3 + 3])?;
+                }
+                input
+            };
             let mut out = [0.; 3];
             if let Some(v) = super::bounded_force(&input) {
                 list(&v)
