@@ -61,6 +61,7 @@ fn polar_div<const CHECK: bool>(a: f64, b: f64) -> f64 {
 fn polar_sin<const CHECK: bool>(a: f64) -> f64 {
     polar_f::<CHECK>(a.sin())
 }
+#[inline(always)]
 fn cl<const CHECK: bool>(p: &[f64], angle: f64) -> f64 {
     let a = polar_f::<CHECK>(angle);
     if p[9] <= a && a <= p[8] {
@@ -195,6 +196,7 @@ fn cl<const CHECK: bool>(p: &[f64], angle: f64) -> f64 {
     )
 }
 
+#[inline(always)]
 fn cd<const CHECK: bool>(p: &[f64], angle: f64) -> f64 {
     let a = polar_f::<CHECK>(angle);
     let line = polar_add::<CHECK>(polar_mul::<CHECK>(p[3], a), p[0]);
@@ -211,6 +213,17 @@ fn cd<const CHECK: bool>(p: &[f64], angle: f64) -> f64 {
             0.
         },
     );
+    // In the proven finite domain, |sin| is in [0,1]. Monotonic
+    // rounding makes this a lower bound on the drag cap. If the uncapped
+    // value is already below it, the sine cannot change the result.
+    // The checked path still evaluates every original operation so an
+    // otherwise unused intermediate overflow remains observable.
+    if !CHECK {
+        let lower = polar_add::<false>(polar_f::<false>(p[4].min(0.)), polar_f::<false>(0.15));
+        if cd <= lower {
+            return cd;
+        }
+    }
     let bound = polar_add::<CHECK>(
         polar_mul::<CHECK>(
             polar_sin::<CHECK>(polar_mul::<CHECK>(a, polar_f::<CHECK>(0.01745329238474369))).abs(),
@@ -221,6 +234,7 @@ fn cd<const CHECK: bool>(p: &[f64], angle: f64) -> f64 {
     cd.min(bound)
 }
 
+#[inline(always)]
 fn coefficients<const CHECK: bool>(
     p: &[f64],
     a: f64,
@@ -607,6 +621,7 @@ pub(crate) fn bounded_polar_profile(p: &[f64]) -> bool {
         _ => v.abs() <= 1000.,
     }) && p[17].abs() <= 180.
 }
+#[inline(always)]
 pub(crate) fn bounded_polar(
     p: &[f64],
     a: f64,
