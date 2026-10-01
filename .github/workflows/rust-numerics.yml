@@ -32,5 +32,5 @@ jobs:
       - name: Compare exact flight outputs and benchmark Python, Cython, Rust and hybrid
         env:
           WT_NUMERIC_BACKEND: rust
-        run: python scripts/test_rust_backend.py --benchmark-cython
+        run: python scripts/test_rust_backend.py --benchmark-cython --benchmark-ablation
 

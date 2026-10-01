@@ -377,6 +377,10 @@ def flight_worker():
         rust.controller_function=lambda library,reference:reference
     if os.environ.get('WT_BENCH_PREVIOUS_SEEKER') == '1':
         rust.seeker_functions=lambda library,update,slew:(update,slew)
+    for name in filter(None,os.environ.get('WT_BENCH_DISABLE_BLOCK','').split(',')):
+        if name=='seeker_functions':setattr(rust,name,lambda library,update,slew:(update,slew))
+        elif name=='vector_function':setattr(rust,name,lambda library,reference,mode:reference)
+        else:setattr(rust,name,lambda library,reference:reference)
     if os.environ.get('WT_BENCH_NO_CYTHON') == '1':
         import missile_backend
         missile_backend._activate_cython=lambda:'python'
@@ -425,6 +429,18 @@ def benchmark_cython():
     print(run.stdout.strip())
 
 
+def benchmark_ablation():
+    results={}
+    for block in ('none','aero_function','atmosphere_function','orientation_function','matrix_quaternion_function','vector_function','integrate_function','controller_function','seeker_functions'):
+        env=dict(os.environ,WT_MISSILE_BACKEND='compiled',WT_NUMERIC_BACKEND='rust',WT_BENCH_DISABLE_BLOCK='' if block=='none' else block)
+        for key in ('WT_BENCH_PREVIOUS_RUST','WT_BENCH_PREVIOUS_VECTOR','WT_BENCH_PREVIOUS_CONTROLLER','WT_BENCH_PREVIOUS_SEEKER','WT_BENCH_NO_CYTHON'):env[key]='0'
+        run=subprocess.run([sys.executable,__file__,'--flight-worker'],env=env,capture_output=True,text=True,check=True,timeout=120)
+        results[block]=json.loads(run.stdout)
+        if results[block]['backend']!='compiled':raise AssertionError('Cython not active')
+        print('ABLATION_RESULT '+block+' '+json.dumps(results[block]),flush=True)
+    if len({r['digest'] for r in results.values()})!=1:raise AssertionError('Ablation output mismatch')
+
+
 def em_cython_worker():
     os.environ['WT_NUMERIC_BACKEND']='rust'
     library=rust.load(__file__)
@@ -452,6 +468,7 @@ if __name__ == '__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--benchmark',action='store_true')
     parser.add_argument('--benchmark-cython',action='store_true')
+    parser.add_argument('--benchmark-ablation',action='store_true')
     parser.add_argument('--benchmark-flight',action='store_true')
     parser.add_argument('--flight-worker',action='store_true',help=argparse.SUPPRESS)
     args=parser.parse_args()
@@ -461,4 +478,5 @@ if __name__ == '__main__':
     if not result.wasSuccessful():raise SystemExit(1)
     if args.benchmark:benchmark()
     if args.benchmark_cython:benchmark_cython()
+    if args.benchmark_ablation:benchmark_ablation()
     if args.benchmark_flight:benchmark_flight()
