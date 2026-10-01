@@ -33,4 +33,3 @@ jobs:
         env:
           WT_NUMERIC_BACKEND: rust
         run: python scripts/test_rust_backend.py --benchmark-cython --benchmark-ablation
-

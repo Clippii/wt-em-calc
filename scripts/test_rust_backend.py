@@ -384,8 +384,11 @@ def flight_worker():
     if os.environ.get('WT_BENCH_NO_CYTHON') == '1':
         import missile_backend
         missile_backend._activate_cython=lambda:'python'
+    if os.environ.get('WT_BENCH_FULL_VECTORS') == '1':
+        import missile_backend
+        missile_backend.RUST_VECTORS_WITH_CYTHON=True
     import missile_worker
-    request=dict(missile='us_aim9l_sidewinder',duration=10,
+    request=dict(missile=os.environ.get('WT_BENCH_MISSILE','us_aim9l_sidewinder'),duration=10,
                  launcher=dict(position=[0,5000,0],velocity=[300,0,0],angles=[0,0,0]),
                  target=dict(position=[4000,5000,0],velocity=[200,0,0],angles=[0,0,0]))
     times=[]
@@ -414,19 +417,28 @@ def benchmark_flight():
 
 
 def benchmark_cython():
-    results={}
-    for mode in ('python','rust-only','cython','hybrid'):
-        env=dict(os.environ,WT_MISSILE_BACKEND='python' if mode=='python' else 'compiled' if mode in ('cython','hybrid') else 'auto',
-                 WT_NUMERIC_BACKEND='rust' if mode in ('rust-only','hybrid') else 'python',
-                 WT_BENCH_NO_CYTHON='1' if mode=='rust-only' else '0')
-        for key in ('WT_BENCH_PREVIOUS_RUST','WT_BENCH_PREVIOUS_VECTOR','WT_BENCH_PREVIOUS_CONTROLLER','WT_BENCH_PREVIOUS_SEEKER'):env[key]='0'
-        run=subprocess.run([sys.executable,__file__,'--flight-worker'],env=env,capture_output=True,text=True,check=True,timeout=120)
-        results[mode]=json.loads(run.stdout)
-        if mode in ('cython','hybrid') and results[mode]['backend']!='compiled':raise AssertionError('Cython not active')
-    if len({r['digest'] for r in results.values()})!=1:raise AssertionError('Cython flight mismatch')
-    print('CYTHON_FLIGHT_BENCHMARK '+json.dumps(results))
+    for missile in ('us_aim9l_sidewinder','us_aim7f_sparrow','su_r_73'):
+        results={}
+        for mode in ('python','rust-only','cython','hybrid','full-rust-hybrid'):
+            env=dict(os.environ,WT_MISSILE_BACKEND='python' if mode=='python' else 'compiled' if mode in ('cython','hybrid','full-rust-hybrid') else 'auto',
+                     WT_NUMERIC_BACKEND='rust' if mode in ('rust-only','hybrid','full-rust-hybrid') else 'python',
+                     WT_BENCH_MISSILE=missile,WT_BENCH_FULL_VECTORS='1' if mode=='full-rust-hybrid' else '0',
+                     WT_BENCH_NO_CYTHON='1' if mode=='rust-only' else '0')
+            for key in ('WT_BENCH_PREVIOUS_RUST','WT_BENCH_PREVIOUS_VECTOR','WT_BENCH_PREVIOUS_CONTROLLER','WT_BENCH_PREVIOUS_SEEKER'):env[key]='0'
+            run=subprocess.run([sys.executable,__file__,'--flight-worker'],env=env,capture_output=True,text=True,check=True,timeout=120)
+            results[mode]=json.loads(run.stdout)
+            if mode in ('cython','hybrid','full-rust-hybrid') and results[mode]['backend']!='compiled':raise AssertionError('Cython not active')
+        if len({r['digest'] for r in results.values()})!=1:raise AssertionError('Cython flight mismatch')
+        print('CYTHON_FLIGHT_BENCHMARK '+json.dumps(dict(missile=missile,results=results)),flush=True)
     run=subprocess.run([sys.executable,__file__,'--em-cython-worker'],capture_output=True,text=True,check=True,timeout=300)
     print(run.stdout.strip())
+    kernels_results={}
+    for mode in ('python','cython','rust'):
+        env=dict(os.environ,WT_MISSILE_BACKEND='compiled' if mode=='cython' else 'python' if mode=='python' else 'auto',WT_NUMERIC_BACKEND='rust' if mode=='rust' else 'python')
+        run=subprocess.run([sys.executable,__file__,'--missile-kernel-worker'],env=env,capture_output=True,text=True,check=True,timeout=180)
+        kernels_results[mode]=json.loads(run.stdout)
+    if len({r['digest'] for r in kernels_results.values()})!=1:raise AssertionError('Missile kernel output mismatch')
+    print('CYTHON_MISSILE_KERNEL_BENCHMARK '+json.dumps(kernels_results),flush=True)
 
 
 def benchmark_ablation():
@@ -441,6 +453,31 @@ def benchmark_ablation():
     if len({r['digest'] for r in results.values()})!=1:raise AssertionError('Ablation output mismatch')
 
 
+def missile_kernel_worker():
+    if os.environ['WT_NUMERIC_BACKEND']=='rust':
+        import missile_backend
+        missile_backend._activate_cython=lambda:'python'
+    import missile_worker,aero_vectors,control_frame,motor_vector,shared_seeker
+    if os.environ['WT_MISSILE_BACKEND']=='compiled' and os.environ['WT_NUMERIC_BACKEND']=='python':
+        assert missile_worker.BACKEND=='compiled'
+    props=kernels.aero_properties(dict(finsAoaHor=.2,finsAoaVer=.3))
+    props.update(axis_quaternion=[0.,0.,0.,1.],cy_table=[])
+    q=[.1,.2,.3,.9];v=[10.,20.,30.];pred=[.1,.2,.3]
+    state=dict(position=[0.,5000.,0.],velocity=[600.,0.,0.],omega=[.1,.2,.3],quaternion=q,time=10.,clocks=[1.,2.,3.,4.],distance=20.,water_distance=0.,water=False)
+    pairs={
+        'atmosphere':lambda:kernels.atmosphere(5000.),
+        'orientation':lambda:body_integration.orientation([0.,0.,0.,1.],[.01,-.02,.03]),
+        'aero':lambda:aero_vectors.forces(props,5000.,[600.,10.,20.],[0.,0.,0.,1.],[.1,.2,.3],fins=(.1,.2)),
+        'matrix':lambda:control_frame.matrix_quaternion([.8,.6,0.],[-.6,.8,0.],[0.,0.,1.]),
+        'rotate':lambda:motor_vector.rotate_thrust(q,v),
+        'residual':lambda:shared_seeker.world_residual(q,v,pred),
+        'coast':lambda:shared_seeker.coast_body(q,v),
+        'integrate':lambda:body_integration.integrate(state,[10.,-5.,3.],[.1,-.2,.3],1/48,10.02)}
+    timings={name:min(timeit.repeat(fn,number=10000,repeat=3))*100 for name,fn in pairs.items()}
+    digest=hashlib.sha256(json.dumps({name:fn() for name,fn in pairs.items()},sort_keys=True).encode()).hexdigest()
+    print(json.dumps(dict(timings=timings,digest=digest)))
+
+
 def em_cython_worker():
     os.environ['WT_NUMERIC_BACKEND']='rust'
     library=rust.load(__file__)
@@ -448,23 +485,32 @@ def em_cython_worker():
     positions={name:[1.,-2.,3.] for name in assembly.NAMES};cog=[0.,0.,0.]
     packed_force=[x for name in (*assembly.NAMES,'parasite') for x in forces[name]]
     packed_moment=[x for name in assembly.NAMES for x in forces[name]]+[x for name in assembly.NAMES for x in positions[name]]+cog
+    rows=[(a,a/2,.2,.9) for a in range(-180,181)]
     groups={
+        'sweep':(lambda:[REF_POLAR.calc_c(POLAR,*row) for row in rows],lambda:[polar.calc_c(POLAR,*row) for row in rows],lambda:rust.polar_batch(POLAR,rows)),
         'polar':(lambda:REF_POLAR.calc_c(POLAR,37.,12.,.2,.9),lambda:polar.calc_c(POLAR,37.,12.,.2,.9),lambda:rust.polar(library,POLAR,37.,12.,.2,.9)),
         'force':(lambda:REF_ASSEMBLY.assemble_force(forces),lambda:assembly.assemble_force(forces),lambda:rust.assembly(library,(x for name in (*assembly.NAMES,'parasite') for x in forces[name]))),
         'moment':(lambda:REF_ASSEMBLY.assemble_moment(forces,positions,cog),lambda:assembly.assemble_moment(forces,positions,cog),lambda:rust.assembly(library,[x for name in assembly.NAMES for x in forces[name]]+[x for name in assembly.NAMES for x in positions[name]]+cog,moment=True))}
     assert Path(assembly.__file__).suffix in ('.so','.pyd'),assembly.__file__
     result={}
     for name,functions in groups.items():
+        def flat(values):
+            for value in values:
+                if isinstance(value,list):yield from flat(value)
+                else:yield value
         expected=functions[0]()
         for fn in functions[1:]:
-            assert [struct.pack('<d',x) for x in fn()]==[struct.pack('<d',x) for x in expected]
-        result[name]=dict(zip(('python_us','cython_us','rust_us'),[min(timeit.repeat(fn,number=10000,repeat=3))*100 for fn in functions]))
+            assert [struct.pack('<d',x) for x in flat(fn())]==[struct.pack('<d',x) for x in flat(expected)]
+        count=300 if name=='sweep' else 10000
+        result[name]=dict(zip(('python_us','cython_us','rust_us'),[min(timeit.repeat(fn,number=count,repeat=3))/count*1e6 for fn in functions]))
     print('CYTHON_EM_BENCHMARK '+json.dumps(result))
 
 
 if __name__ == '__main__':
     if '--em-cython-worker' in sys.argv:
         em_cython_worker();raise SystemExit(0)
+    if '--missile-kernel-worker' in sys.argv:
+        missile_kernel_worker();raise SystemExit(0)
     parser=argparse.ArgumentParser()
     parser.add_argument('--benchmark',action='store_true')
     parser.add_argument('--benchmark-cython',action='store_true')

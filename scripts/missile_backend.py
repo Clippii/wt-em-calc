@@ -75,6 +75,10 @@ def _activate_cython():
     return 'compiled'
 
 
+# Compiled scalar transforms beat ctypes packing on the measured Cython path.
+RUST_VECTORS_WITH_CYTHON = False
+
+
 def activate():
     mode = _activate_cython()
     if mode == 'reference':
@@ -103,13 +107,14 @@ def activate():
         replacements[shared_seeker.slew]=seeker_slew
         replacements.update({acceleration_control.update: controller_function(library, acceleration_control.update),
                              body_integration.integrate: integrate_function(library, body_integration.integrate),
-                             motor_vector.rotate_thrust: vector_function(library, motor_vector.rotate_thrust, 0),
-                             shared_seeker.world_residual: vector_function(library, shared_seeker.world_residual, 1),
-                             shared_seeker.coast_body: vector_function(library, shared_seeker.coast_body, 2),
                              control_frame.matrix_quaternion: matrix_quaternion_function(library, control_frame.matrix_quaternion),
                              aero_vectors.forces: aero_function(library, aero_vectors.forces),
                              kernels.atmosphere: atmosphere_function(library, kernels.atmosphere),
                              body_integration.orientation: orientation_function(library, body_integration.orientation)})
+        if mode != 'compiled' or RUST_VECTORS_WITH_CYTHON:
+            replacements.update({motor_vector.rotate_thrust: vector_function(library, motor_vector.rotate_thrust, 0),
+                                 shared_seeker.world_residual: vector_function(library, shared_seeker.world_residual, 1),
+                                 shared_seeker.coast_body: vector_function(library, shared_seeker.coast_body, 2)})
     scripts = Path(__file__).resolve().parent
     for module in list(sys.modules.values()):
         filename = getattr(module, '__file__', None)
