@@ -405,7 +405,9 @@ unsafe extern "C" fn force(s: O, a: *const O, n: isize) -> O {
                 sequence(s, field(s, a[0], 24 + i)?, &mut input[i * 3..i * 3 + 3])?
             }
             let mut out = [0.; 3];
-            if super::wt_force(input.as_ptr(), out.as_mut_ptr()) == 0 {
+            if let Some(v) = super::bounded_force(&input) {
+                list(&v)
+            } else if super::wt_force(input.as_ptr(), out.as_mut_ptr()) == 0 {
                 None
             } else {
                 list(&out)
@@ -1301,9 +1303,9 @@ unsafe fn keyword_dict(a: &[O], n: usize, keywords: O) -> Option<Owned> {
     }
     Some(d)
 }
+#[inline(always)]
 unsafe fn bound_call(self_: O, argv: *const O, n: isize, keywords: O, kind: u32) -> O {
     let s = key(self_, 0);
-    let reference = key(self_, 1);
     let nk = if keywords.is_null() {
         0
     } else {
@@ -1414,7 +1416,7 @@ unsafe fn bound_call(self_: O, argv: *const O, n: isize, keywords: O, kind: u32)
     if !api!(4, unsafe extern "C" fn() -> O)().is_null() {
         return ptr::null_mut();
     }
-    original_call(reference, a, keywords)
+    original_call(key(self_, 1), a, keywords)
 }
 #[repr(C)]
 struct BoundMethod {

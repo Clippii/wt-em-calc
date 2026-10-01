@@ -281,30 +281,67 @@ pub unsafe extern "C" fn wt_polar_batch(
 pub unsafe extern "C" fn wt_force(input: *const f64, out: *mut f64) -> u32 {
     reset_overflow();
     let v = std::slice::from_raw_parts(input, 24);
+    let result = force_values::<true>(v);
+    std::ptr::copy_nonoverlapping(result.as_ptr(), out, 3);
+    success()
+}
+
+#[inline(always)]
+fn force_values<const CHECK: bool>(v: &[f64]) -> [f64; 3] {
     let mut q = [0.; 24];
     for i in 0..24 {
-        q[i] = f(v[i]);
+        q[i] = polar_f::<CHECK>(v[i]);
     }
     let [l, r, h, j, v, b, c, p] = std::array::from_fn::<_, 8, _>(|i| &q[i * 3..i * 3 + 3]);
-    let result = [
-        add(
-            add(
-                add(v[0], add(j[0], add(h[0], add(add(l[0], c[0]), r[0])))),
+    [
+        polar_add::<CHECK>(
+            polar_add::<CHECK>(
+                polar_add::<CHECK>(
+                    v[0],
+                    polar_add::<CHECK>(
+                        j[0],
+                        polar_add::<CHECK>(
+                            h[0],
+                            polar_add::<CHECK>(polar_add::<CHECK>(l[0], c[0]), r[0]),
+                        ),
+                    ),
+                ),
                 b[0],
             ),
             p[0],
         ),
-        add(
-            add(
-                add(add(add(add(l[1], c[1]), r[1]), j[1]), add(v[1], h[1])),
+        polar_add::<CHECK>(
+            polar_add::<CHECK>(
+                polar_add::<CHECK>(
+                    polar_add::<CHECK>(
+                        polar_add::<CHECK>(polar_add::<CHECK>(l[1], c[1]), r[1]),
+                        j[1],
+                    ),
+                    polar_add::<CHECK>(v[1], h[1]),
+                ),
                 p[1],
             ),
             b[1],
         ),
-        add(add(add(b[2], add(p[2], add(r[2], l[2]))), c[2]), v[2]),
-    ];
-    std::ptr::copy_nonoverlapping(result.as_ptr(), out, 3);
-    success()
+        polar_add::<CHECK>(
+            polar_add::<CHECK>(
+                polar_add::<CHECK>(
+                    b[2],
+                    polar_add::<CHECK>(p[2], polar_add::<CHECK>(r[2], l[2])),
+                ),
+                c[2],
+            ),
+            v[2],
+        ),
+    ]
+}
+pub(crate) fn bounded_force(v: &[f64]) -> Option<[f64; 3]> {
+    // At most eight terms per axis: finite inputs <=1e30 cannot overflow f32.
+    if v.iter().all(|x| x.abs() <= 1e30) {
+        Some(force_values::<false>(v))
+    } else {
+        None
+    }
 }
 
 /// Seven forces, seven positions and a center of gravity (45 doubles).

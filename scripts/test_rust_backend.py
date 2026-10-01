@@ -241,6 +241,17 @@ class Parity(unittest.TestCase):
                                     (assembly.assemble_moment(forces,positions,cog),REF_ASSEMBLY.assemble_moment(forces,positions,cog))):
                 for x,y in zip(actual,expected):self.exact(x,y)
 
+    def test_bounded_force_extremes(self):
+        rng=random.Random(61002)
+        for scale in (1e-40,1.,1e30,1.001e30,1e37):
+            for _ in range(50):
+                forces={name:[rng.uniform(-scale,scale) for _ in range(3)]
+                        for name in (*assembly.NAMES,'parasite')}
+                for a,b in zip(assembly.assemble_force(forces),REF_ASSEMBLY.assemble_force(forces)):
+                    self.exact(a,b)
+        huge={name:[3e38,3e38,3e38] for name in (*assembly.NAMES,'parasite')}
+        with self.assertRaises(OverflowError):assembly.assemble_force(huge)
+
     def test_batch(self):
         rows=[(a,a/2,0.2,0.9) for a in range(-180,181)]
         self.assertEqual(rust.polar_batch(POLAR,rows),[REF_POLAR.calc_c(POLAR,*row) for row in rows])
