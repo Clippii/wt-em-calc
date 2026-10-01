@@ -11,13 +11,6 @@ def mul(a,b):return f32(a*b)
 NAMES=('left_wing','right_wing','left_hstab','right_hstab','vstab','fuselage','chute')
 
 def assemble_force(forces):
-    if _rust is not None:
-        if _rust._python:
-            result = _rust._python['force'](forces)
-            if result is not None:return result
-        else:
-            result = _rust_assembly(_rust,(x for n in (*NAMES,'parasite') for x in forces[n]))
-            if result is not None:return result
     l,r,h,j,v,b,c,p=([f32(x) for x in forces[n]] for n in (*NAMES,'parasite'))
     x=add(add(add(v[0],add(j[0],add(h[0],add(add(l[0],c[0]),r[0])))),b[0]),p[0])
     y=add(add(add(add(add(add(l[1],c[1]),r[1]),j[1]),add(v[1],h[1])),p[1]),b[1])
@@ -25,15 +18,6 @@ def assemble_force(forces):
     return [x,y,z]
 
 def assemble_moment(forces,positions,cog):
-    if _rust is not None:
-        if _rust._python:
-            result = _rust._python['moment'](forces,positions,cog)
-        else:
-            values = [x for n in NAMES for x in forces[n]]
-            values.extend(positions[n][i] for n in NAMES for i in range(3))
-            values.extend(cog)
-            result = _rust_assembly(_rust,values,moment=True)
-        if result is not None:return result
     f={n:[f32(x) for x in forces[n]] for n in NAMES}
     r={n:[sub(f32(positions[n][i]),f32(cog[i])) for i in range(3)] for n in NAMES}
     def term(n,fi,ri):return mul(f[n][fi],r[n][ri])
@@ -64,3 +48,25 @@ def limit_aerodynamic_force(force,mass,y_scale=1.0,allow_balance_change=True):
         scale=limit/magnitude
         return [x*scale,y*scale,z*scale]
     return [x,y,z]
+
+
+# Bind complete calls directly; the pure bodies remain reference fallbacks.
+_reference_assemble_force=assemble_force
+_reference_assemble_moment=assemble_moment
+if _rust is not None:
+    if _rust._python:
+        from rust_backend import bind_native
+        globals()['assemble_force']=bind_native(_rust,_reference_assemble_force,0)
+        globals()['assemble_moment']=bind_native(_rust,_reference_assemble_moment,1)
+    else:
+        def _portable_force(forces):
+            result=_rust_assembly(_rust,(x for n in (*NAMES,'parasite') for x in forces[n]))
+            return _reference_assemble_force(forces) if result is None else result
+        def _portable_moment(forces,positions,cog):
+            values=[x for n in NAMES for x in forces[n]]
+            values.extend(positions[n][i] for n in NAMES for i in range(3))
+            values.extend(cog)
+            result=_rust_assembly(_rust,values,moment=True)
+            return _reference_assemble_moment(forces,positions,cog) if result is None else result
+        globals()['assemble_force']=_portable_force
+        globals()['assemble_moment']=_portable_moment

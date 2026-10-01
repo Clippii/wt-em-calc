@@ -32,7 +32,8 @@ import rust_backend as rust
 def reference(name):
     spec = importlib.util.spec_from_file_location('_reference_' + name, rust.ROOT/'scripts'/f'{name}.py')
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    with patch.dict(os.environ,WT_NUMERIC_BACKEND='python'):
+        spec.loader.exec_module(module)
     module._rust = None
     return module
 
@@ -297,6 +298,26 @@ class Parity(unittest.TestCase):
             first=rust.polar(self.library,p,5.,12.,.2,.9)
             number.value=2.
             self.assertNotEqual(first,rust.polar(self.library,p,5.,12.,.2,.9))
+
+    def test_bound_keywords_and_arity(self):
+        if not self.library._python:self.skipTest('Direct builtins unavailable')
+        self.assertEqual(polar.calc_c(POLAR,a=37.,angle=12.,cl_add=.2,cd_coeff=.9),REF_POLAR.calc_c(POLAR,37.,12.,.2,.9))
+        forces={n:[1.,2.,3.] for n in (*assembly.NAMES,'parasite')}
+        self.assertEqual(assembly.assemble_force(forces=forces),REF_ASSEMBLY.assemble_force(forces))
+        native=rust.orientation_function(self.library,body_integration.orientation)
+        q=[0.,0.,0.,1.];increment=[.01,.02,.03]
+        self.assertEqual(native(quaternion=q,increment=increment),body_integration.orientation(q,increment))
+        for fn in (assembly.assemble_force,assembly.assemble_moment,polar.calc_c,native):
+            with self.assertRaises(TypeError):fn()
+        # Native overflow is tested after rounding, matching struct.pack at the
+        # finite upper edge, rather than rejecting a value that rounds to MAX.
+        boundary=3.4028234663852886e38
+        for value in (boundary,boundary*(1+1e-8),boundary*(1+1e-7)):
+            p=dict(POLAR,kq=value)
+            try:expected=REF_POLAR.calc_c(p,0.,0.,0.,0.)
+            except OverflowError:
+                with self.assertRaises(OverflowError):polar.calc_c(p,0.,0.,0.,0.)
+            else:self.assertEqual(polar.calc_c(p,0.,0.,0.,0.),expected)
 
     def test_mutated_polar(self):
         p=dict(POLAR)
@@ -606,6 +627,10 @@ def em_cython_worker():
     library=rust.load(__file__)
     native_assembly=reference('component_assembly');native_assembly._rust=library
     native_polar=reference('polar_f32');native_polar._rust=library
+    if library._python:
+        native_assembly.assemble_force=rust.bind_native(library,native_assembly.assemble_force,0)
+        native_assembly.assemble_moment=rust.bind_native(library,native_assembly.assemble_moment,1)
+        native_polar.calc_c=rust.bind_native(library,native_polar.calc_c,4)
     forces={name:[1e4,-2e4,3e4] for name in (*assembly.NAMES,'parasite')}
     positions={name:[1.,-2.,3.] for name in assembly.NAMES};cog=[0.,0.,0.]
     packed_force=[x for name in (*assembly.NAMES,'parasite') for x in forces[name]]

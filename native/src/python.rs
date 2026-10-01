@@ -11,7 +11,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 type O = *mut c_void;
-static API: OnceLock<[usize; 27]> = OnceLock::new();
+static API: OnceLock<[usize; 28]> = OnceLock::new();
 static FAST_LAYOUT: AtomicBool = AtomicBool::new(false);
 // Optional CPython 3.11/3.12 fast path, matching their public cpython headers.
 // Python probes every layout before enabling it. Other runtimes use Stable ABI.
@@ -397,6 +397,10 @@ unsafe extern "C" fn batch(s: O, a: *const O, n: isize) -> O {
         (|| {
             let a = args(a, n, 2)?;
             let p = polar_input(s, a[0])?;
+            let typ = owned(api!(18, unsafe extern "C" fn(O) -> O)(a[1]))?;
+            if typ.0 != key(s, 49) {
+                return None;
+            }
             let count = api!(6, unsafe extern "C" fn(O) -> isize)(a[1]);
             if count < 0 {
                 return None;
@@ -1161,10 +1165,10 @@ pub unsafe extern "C" fn wt_python_init(
     context: O,
     layout: u32,
 ) -> O {
-    if len != 27 || context.is_null() {
+    if len != 28 || context.is_null() {
         return ptr::null_mut();
     }
-    let table: [usize; 27] = std::slice::from_raw_parts(addresses, 27)
+    let table: [usize; 28] = std::slice::from_raw_parts(addresses, 28)
         .try_into()
         .unwrap();
     if table.contains(&0) {
@@ -1194,9 +1198,245 @@ pub unsafe extern "C" fn wt_python_init(
                 return None;
             }
         }
+        if api!(14, unsafe extern "C" fn(O, *const c_char, O) -> i32)(
+            d.0,
+            b"_context\0".as_ptr().cast(),
+            context,
+        ) < 0
+        {
+            return None;
+        }
         Some(d)
     })();
     result.map_or(ptr::null_mut(), Owned::take)
+}
+
+unsafe fn original_call(reference: O, a: &[O], keywords: O) -> O {
+    let count = if keywords.is_null() {
+        0
+    } else {
+        api!(9, unsafe extern "C" fn(O) -> isize)(keywords) as usize
+    };
+    let positional = a.len() - count;
+    let Some(tuple) = owned(api!(19, unsafe extern "C" fn(isize) -> O)(
+        positional as isize,
+    )) else {
+        return ptr::null_mut();
+    };
+    for (i, o) in a[..positional].iter().enumerate() {
+        inc(*o);
+        if api!(20, unsafe extern "C" fn(O, isize, O) -> i32)(tuple.0, i as isize, *o) < 0 {
+            return ptr::null_mut();
+        }
+    }
+    if count == 0 {
+        return api!(21, unsafe extern "C" fn(O, O) -> O)(reference, tuple.0);
+    }
+    let Some(kwargs) = keyword_dict(a, positional, keywords) else {
+        return ptr::null_mut();
+    };
+    api!(27, unsafe extern "C" fn(O, O, O) -> O)(reference, tuple.0, kwargs.0)
+}
+unsafe fn keyword_dict(a: &[O], n: usize, keywords: O) -> Option<Owned> {
+    let d = dict()?;
+    let count = if keywords.is_null() {
+        0
+    } else {
+        api!(9, unsafe extern "C" fn(O) -> isize)(keywords)
+    };
+    for i in 0..count {
+        let k = api!(2, unsafe extern "C" fn(O, isize) -> O)(keywords, i);
+        if api!(23, unsafe extern "C" fn(O, O, O) -> i32)(d.0, k, a[n + i as usize]) < 0 {
+            return None;
+        }
+    }
+    Some(d)
+}
+unsafe fn bound_call(self_: O, argv: *const O, n: isize, keywords: O, kind: u32) -> O {
+    let s = key(self_, 0);
+    let reference = key(self_, 1);
+    let nk = if keywords.is_null() {
+        0
+    } else {
+        api!(9, unsafe extern "C" fn(O) -> isize)(keywords)
+    };
+    let a = all_args(argv, n + nk);
+    let result = if nk != 0 && kind != 12 {
+        ptr::null_mut()
+    } else {
+        match kind {
+            0 => force(s, argv, n),
+            1 => moment(s, argv, n),
+            2 | 3 | 4 => {
+                let allowed = if kind == 4 { 3..=5 } else { 2..=2 };
+                if !allowed.contains(&(n as usize)) {
+                    ptr::null_mut()
+                } else {
+                    finish(
+                        s,
+                        (|| {
+                            let p = polar_input(s, a[0])?;
+                            let angle = number(s, a[1])?;
+                            let rotation = if kind == 4 { number(s, a[2])? } else { 0. };
+                            let added = if n > 3 { number(s, a[3])? } else { 0. };
+                            let drag = if n > 4 { number(s, a[4])? } else { 1. };
+                            let mut r = [0.; 2];
+                            let mode = if kind == 2 {
+                                0
+                            } else if kind == 3 {
+                                1
+                            } else {
+                                2
+                            };
+                            if super::wt_polar(
+                                p.as_ptr(),
+                                angle,
+                                rotation,
+                                added,
+                                drag,
+                                mode,
+                                r.as_mut_ptr(),
+                            ) == 0
+                                || !r.iter().all(|v| v.is_finite())
+                            {
+                                return None;
+                            }
+                            if mode == 2 {
+                                list(&r)
+                            } else {
+                                float(r[0])
+                            }
+                        })(),
+                    )
+                }
+            }
+            5 | 6 | 7 => {
+                let required = if kind == 6 { 3 } else { 2 };
+                if n != required {
+                    ptr::null_mut()
+                } else {
+                    // The mode is a native constant; avoid creating a temporary Python int.
+                    finish(
+                        s,
+                        (|| {
+                            let mut input = [0.; 10];
+                            sequence(s, a[0], &mut input[..4])?;
+                            sequence(s, a[1], &mut input[4..7])?;
+                            if kind == 6 {
+                                sequence(s, a[2], &mut input[7..])?
+                            }
+                            let mut r = [0.; 3];
+                            if super::aero::wt_vector(input.as_ptr(), kind - 5, r.as_mut_ptr()) == 0
+                            {
+                                None
+                            } else {
+                                list(&r)
+                            }
+                        })(),
+                    )
+                }
+            }
+            8 => atmosphere(s, argv, n),
+            9 => orientation(s, argv, n),
+            10 => matrix(s, argv, n),
+            11 => {
+                if n == 5 {
+                    let p = [a[0], a[1], a[2], a[3], a[4], key(self_, 3)];
+                    integrate(s, p.as_ptr(), 6)
+                } else {
+                    integrate(s, argv, n)
+                }
+            }
+            _ => {
+                if n != 5 {
+                    ptr::null_mut()
+                } else {
+                    let kwargs = keyword_dict(a, n as usize, keywords);
+                    match kwargs {
+                        None => return ptr::null_mut(),
+                        Some(k) => {
+                            let p = [a[0], a[1], a[2], a[3], a[4], k.0];
+                            aero(s, p.as_ptr(), 6)
+                        }
+                    }
+                }
+            }
+        }
+    };
+    if !result.is_null() {
+        if result != key(s, 47) {
+            return result;
+        }
+        dec(result)
+    }
+    if !api!(4, unsafe extern "C" fn() -> O)().is_null() {
+        return ptr::null_mut();
+    }
+    original_call(reference, a, keywords)
+}
+#[repr(C)]
+struct BoundMethod {
+    name: *const c_char,
+    function: unsafe extern "C" fn(O, *const O, isize, O) -> O,
+    flags: i32,
+    doc: *const c_char,
+}
+unsafe impl Sync for BoundMethod {}
+macro_rules! bound_method {
+    ($f:ident,$kind:literal) => {
+        unsafe extern "C" fn $f(s: O, a: *const O, n: isize, k: O) -> O {
+            bound_call(s, a, n, k, $kind)
+        }
+    };
+}
+bound_method!(bound_force, 0);
+bound_method!(bound_moment, 1);
+bound_method!(bound_cl, 2);
+bound_method!(bound_cd, 3);
+bound_method!(bound_polar, 4);
+bound_method!(bound_rotate, 5);
+bound_method!(bound_residual, 6);
+bound_method!(bound_coast, 7);
+bound_method!(bound_atmosphere, 8);
+bound_method!(bound_orientation, 9);
+bound_method!(bound_matrix, 10);
+bound_method!(bound_integrate, 11);
+bound_method!(bound_aero, 12);
+macro_rules! bound_definition {
+    ($name:literal,$f:ident) => {
+        BoundMethod {
+            name: concat!($name, "\0").as_ptr().cast(),
+            function: $f,
+            flags: 0x82,
+            doc: ptr::null(),
+        }
+    };
+}
+static BOUND: [BoundMethod; 13] = [
+    bound_definition!("assemble_force", bound_force),
+    bound_definition!("assemble_moment", bound_moment),
+    bound_definition!("calc_cl", bound_cl),
+    bound_definition!("calc_cd", bound_cd),
+    bound_definition!("calc_c", bound_polar),
+    bound_definition!("rotate_thrust", bound_rotate),
+    bound_definition!("world_residual", bound_residual),
+    bound_definition!("coast_body", bound_coast),
+    bound_definition!("atmosphere", bound_atmosphere),
+    bound_definition!("orientation", bound_orientation),
+    bound_definition!("matrix_quaternion", bound_matrix),
+    bound_definition!("integrate", bound_integrate),
+    bound_definition!("forces", bound_aero),
+];
+#[no_mangle]
+pub unsafe extern "C" fn wt_python_bound(index: u32, context: O) -> O {
+    if index >= 13 || API.get().is_none() || context.is_null() {
+        return ptr::null_mut();
+    }
+    api!(16, unsafe extern "C" fn(*const BoundMethod, O, O) -> O)(
+        &BOUND[index as usize],
+        context,
+        ptr::null_mut(),
+    )
 }
 
 #[inline]

@@ -3,7 +3,6 @@ from component_assembly import f32,add,sub,mul
 from rust_backend import load as _load_rust, polar as _rust_polar
 
 _rust = _load_rust(__file__)
-_native_polar = _rust._python.get('polar') if _rust is not None else None
 
 
 def sin(x):return f32(math.sin(x))
@@ -11,9 +10,6 @@ def div(a,b):return f32(a/b)
 
 
 def calc_cl(p,a):
-    if _rust is not None:
-        result = _native_polar(p,a,0.,0.,1.,0) if _native_polar is not None else _rust_polar(_rust,p,a,mode=0)
-        if result is not None:return result[0]
     a=f32(a)
     if p['aoaLineL']<=a<=p['aoaLineH']:
         return add(mul(mul(a,p['clLineCoeff']),p['cyMult']),p['cl0'])
@@ -48,9 +44,6 @@ def calc_cl(p,a):
 
 
 def calc_cd(p,a):
-    if _rust is not None:
-        result = _native_polar(p,a,0.,0.,1.,1) if _native_polar is not None else _rust_polar(_rust,p,a,mode=1)
-        if result is not None:return result[0]
     a=f32(a);line=add(mul(p['clLineCoeff'],a),p['cl0'])
     delta=sub(a,p['aoaCritH' if a>=0. else 'aoaCritL'])
     if a<0.:delta=-delta
@@ -60,9 +53,30 @@ def calc_cd(p,a):
 
 
 def calc_c(p,a,angle,cl_add=0.,cd_coeff=1.):
-    if _rust is not None:
-        result = _native_polar(p,a,angle,cl_add,cd_coeff,2) if _native_polar is not None else _rust_polar(_rust,p,a,angle,cl_add,cd_coeff)
-        if result is not None:return result
     cd=mul(calc_cd(p,a),f32(cd_coeff));cl=add(calc_cl(p,a),f32(cl_add))
     radians=mul(f32(angle),f32(.01745329238474369));sn=sin(radians);cs=f32(math.cos(radians))
     return [mul(sub(mul(cs,cd),mul(cl,sn)),p['kq']),mul(add(mul(cs,cl),mul(cd,sn)),p['clKq'])]
+
+
+_reference_calc_cl=calc_cl
+_reference_calc_cd=calc_cd
+_reference_calc_c=calc_c
+if _rust is not None:
+    if _rust._python:
+        from rust_backend import bind_native
+        globals()['calc_cl']=bind_native(_rust,_reference_calc_cl,2)
+        globals()['calc_cd']=bind_native(_rust,_reference_calc_cd,3)
+        globals()['calc_c']=bind_native(_rust,_reference_calc_c,4)
+    else:
+        def _portable_cl(p,a):
+            result=_rust_polar(_rust,p,a,mode=0)
+            return _reference_calc_cl(p,a) if result is None else result[0]
+        def _portable_cd(p,a):
+            result=_rust_polar(_rust,p,a,mode=1)
+            return _reference_calc_cd(p,a) if result is None else result[0]
+        def _portable_c(p,a,angle,cl_add=0.,cd_coeff=1.):
+            result=_rust_polar(_rust,p,a,angle,cl_add,cd_coeff)
+            return _reference_calc_c(p,a,angle,cl_add,cd_coeff) if result is None else result
+        globals()['calc_cl']=_portable_cl
+        globals()['calc_cd']=_portable_cd
+        globals()['calc_c']=_portable_c

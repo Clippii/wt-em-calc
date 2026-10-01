@@ -111,7 +111,7 @@ def _python_interface(library):
              'PyList_New', 'PyList_SetItem', 'PyDict_New', 'PyDict_SetItemString',
              'PyLong_FromLongLong', 'PyCFunction_NewEx', 'PyErr_ExceptionMatches', 'PyObject_Type',
              'PyTuple_New','PyTuple_SetItem','PyObject_CallObject',
-             'PyDict_Next','PyDict_SetItem','PyList_Append','PyLong_FromVoidPtr','PyDict_Size')
+             'PyDict_Next','PyDict_SetItem','PyList_Append','PyLong_FromVoidPtr','PyDict_Size','PyObject_Call')
     addresses = (ctypes.c_size_t * len(names))(*(ctypes.cast(getattr(ctypes.pythonapi,name),ctypes.c_void_p).value for name in names))
     keys = (*FIELDS, 'left_wing','right_wing','left_hstab','right_hstab','vstab','fuselage','chute','parasite',
             'position','velocity','omega','quaternion','time','clocks','distance','water_distance','water')
@@ -177,6 +177,13 @@ def scalar_functions(library, references):
     return tuple(bind(i,(reference,library)) for i,reference in enumerate(references))
 
 
+def bind_native(library, reference, kind):
+    if library is None or not library._python:
+        return reference
+    bind=ctypes.PYFUNCTYPE(ctypes.py_object,ctypes.c_uint32,ctypes.py_object)(('wt_python_bound',library))
+    return bind(kind,(library._python['_context'],reference,library,(0.,)*4))
+
+
 def copy_function(library, reference):
     if not library._python:
         return reference
@@ -238,6 +245,10 @@ def assembly(library, values, moment=False):
 def polar_batch(p, rows):
     """Evaluate [angle, rotation, added lift, drag multiplier] rows in one call."""
     library = load(__file__)
+    if library is not None and library._python:
+        result = library._python['batch'](p,rows)
+        if result is not None:
+            return result
     rows = [tuple(row) for row in rows]
     if any(len(row) != 4 for row in rows):
         raise ValueError('Each polar row must contain four values')
@@ -260,11 +271,7 @@ def polar_batch(p, rows):
 
 def atmosphere_function(library, reference):
     if library._python:
-        native=library._python['atmosphere']
-        def atmosphere(height):
-            result=native(height)
-            return reference(height) if result is None else result
-        return atmosphere
+        return bind_native(library,reference,8)
     def atmosphere(height):
         if not math.isfinite(height) or abs(height)>3.4028234663852886e38:
             return reference(height)
@@ -278,11 +285,7 @@ def atmosphere_function(library, reference):
 
 def orientation_function(library, reference):
     if library._python:
-        native=library._python['orientation']
-        def orientation(quaternion,increment):
-            result=native(quaternion,increment)
-            return reference(quaternion,increment) if result is None else result
-        return orientation
+        return bind_native(library,reference,9)
     def orientation(quaternion, increment):
         values = (*quaternion, *increment)
         packed = _array(values)
@@ -297,11 +300,7 @@ def orientation_function(library, reference):
 
 def aero_function(library, reference):
     if library._python:
-        native=library._python['aero']
-        def forces(props,height,velocity,q,omega,**kwargs):
-            result=native(props,height,velocity,q,omega,kwargs)
-            return reference(props,height,velocity,q,omega,**kwargs) if result is None else result
-        return forces
+        return bind_native(library,reference,12)
     fields=('stabilizer_arm','cx','cx_aoa','cy','cy_limit','front_area','side_area','fins_hor','fins_ver','fin_pressure_limit','damping_geometry','mass')
     def forces(props,height,velocity,q,omega,**kwargs):
         defaults=dict(wind=(0.,0.,0.),fins=(0.,0.),additional_cx=0.,additional_lever=0.,dt=1/48,torque=(0.,0.,0.),force=(0.,0.,0.),mass_lost=0.,gravity=True,use_cxi=True,mass_term=0.,angular_environment=(0.,0.,0.),perturbation=0.,body_random=0.)
@@ -329,11 +328,7 @@ def aero_function(library, reference):
 
 def matrix_quaternion_function(library, reference):
     if library._python:
-        native=library._python['matrix']
-        def matrix_quaternion(forward,up,right):
-            result=native(forward,up,right)
-            return reference(forward,up,right) if result is None else result
-        return matrix_quaternion
+        return bind_native(library,reference,10)
     def matrix_quaternion(forward,up,right):
         if any(len(row)!=3 for row in (forward,up,right)):
             return reference(forward,up,right)
@@ -347,13 +342,7 @@ def matrix_quaternion_function(library, reference):
 
 def vector_function(library, reference, mode):
     if library._python:
-        native=library._python['vector']
-        def vector(q,value,*rest):
-            if (mode!=1 and rest) or (mode==1 and len(rest)!=1):
-                return reference(q,value,*rest)
-            result=native(q,value,rest[0] if mode==1 else None,mode)
-            return reference(q,value,*rest) if result is None else result
-        return vector
+        return bind_native(library,reference,5+mode)
     def vector(q,value,*rest):
         if len(q)!=4 or len(value)!=3 or (mode!=1 and rest) or (mode==1 and (len(rest)!=1 or len(rest[0])!=3)):
             return reference(q,value,*rest)
@@ -367,11 +356,7 @@ def vector_function(library, reference, mode):
 
 def integrate_function(library, reference):
     if library._python:
-        native=library._python['integrate']
-        def integrate(state,acceleration,angular_acceleration,dt,absolute_time,clock_rates=(0.,)*4):
-            result=native(state,acceleration,angular_acceleration,dt,absolute_time,clock_rates)
-            return reference(state,acceleration,angular_acceleration,dt,absolute_time,clock_rates) if result is None else result
-        return integrate
+        return bind_native(library,reference,11)
     def integrate(state,acceleration,angular_acceleration,dt,absolute_time,clock_rates=(0.,)*4):
         args=(state,acceleration,angular_acceleration,dt,absolute_time,clock_rates)
         try:

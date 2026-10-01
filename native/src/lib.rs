@@ -8,10 +8,11 @@ mod seeker;
 thread_local! {static OVERFLOW: Cell<bool> = Cell::new(false);}
 #[inline]
 fn f(x: f64) -> f64 {
-    if x.is_finite() && x.abs() > f32::MAX as f64 {
+    let rounded = x as f32;
+    if rounded.is_infinite() && x.is_finite() {
         OVERFLOW.with(|flag| flag.set(true));
     }
-    (x as f32) as f64
+    rounded as f64
 }
 fn reset_overflow() {
     OVERFLOW.with(|flag| flag.set(false));
